@@ -5,7 +5,7 @@ EXPOSE 3000
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 RUN pnpm install --frozen-lockfile
