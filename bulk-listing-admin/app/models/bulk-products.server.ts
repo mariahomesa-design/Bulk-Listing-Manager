@@ -40,6 +40,7 @@ export type VariantUpdateRow = {
   inventoryPolicy?: "CONTINUE" | "DENY";
   inventoryItemId?: string;
   quantity?: number;
+  productStatus?: "ACTIVE" | "DRAFT" | "ARCHIVED";
 };
 
 export const STOCK_TEMPLATE_HEADERS = [
@@ -49,7 +50,9 @@ export const STOCK_TEMPLATE_HEADERS = [
   "Barcode",
   "Current stock",
   "New stock",
+  "Status",
   "Inventory item ID",
+  "Product ID",
 ];
 
 function rowValue(row: Record<string, unknown>, keys: string[]) {
@@ -86,11 +89,25 @@ function numberValue(value: string): number | undefined {
 function statusValue(value: string): "ACTIVE" | "DRAFT" | "ARCHIVED" {
   const normalized = value.trim().toUpperCase();
 
-  if (normalized === "ACTIVE" || normalized === "ARCHIVED") {
+  if (normalized === "ACTIVE") {
+    return "ACTIVE";
+  }
+
+  if (["ARCHIVED", "UNLIST", "UNLISTED"].includes(normalized)) {
+    return "ARCHIVED";
+  }
+
+  if (normalized === "DRAFT") {
     return normalized;
   }
 
   return "DRAFT";
+}
+
+function optionalStatusValue(
+  value: string,
+): "ACTIVE" | "DRAFT" | "ARCHIVED" | undefined {
+  return value.trim() ? statusValue(value) : undefined;
 }
 
 export function normalizeProductRows(
@@ -157,12 +174,13 @@ export function normalizeStockRows(
       }
 
       return {
-        productId: rowValue(raw, ["productId"]),
+        productId: rowValue(raw, ["Product ID", "productId"]),
         variantId: rowValue(raw, ["variantId"]),
         inventoryItemId: rowValue(raw, ["Inventory item ID", "inventoryItemId"]),
         sku: rowValue(raw, ["SKU", "sku"]),
         barcode: rowValue(raw, ["Barcode", "barcode"]),
         quantity: numberValue(rowValue(raw, ["New stock", "Stock", "quantity"])),
+        productStatus: optionalStatusValue(rowValue(raw, ["Status", "status"])),
       };
     })
     .filter((row) => row.inventoryItemId && row.quantity !== undefined);
@@ -183,7 +201,9 @@ const STOCK_TEMPLATE_QUERY = `#graphql
           barcode
           inventoryQuantity
           product {
+            id
             title
+            status
           }
           inventoryItem {
             id
@@ -221,7 +241,14 @@ export async function getStockTemplateRows(admin: GraphqlClient) {
         Barcode: variant.barcode || "",
         "Current stock": variant.inventoryQuantity ?? "",
         "New stock": "",
+        Status:
+          variant.product?.status === "ACTIVE"
+            ? "Active"
+            : variant.product?.status === "ARCHIVED"
+              ? "Unlist"
+              : "Draft",
         "Inventory item ID": variant.inventoryItem?.id || "",
+        "Product ID": variant.product?.id || "",
       });
     }
 

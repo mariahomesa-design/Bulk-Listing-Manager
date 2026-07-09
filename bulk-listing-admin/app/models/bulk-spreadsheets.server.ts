@@ -1,3 +1,4 @@
+import ExcelJS from "exceljs";
 import * as XLSX from "xlsx";
 
 export type TemplateKey =
@@ -83,7 +84,9 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
         Barcode: "1234567890123",
         "Current stock": 20,
         "New stock": "",
+        Status: "Active",
         "Inventory item ID": "gid://shopify/InventoryItem/1234567890",
+        "Product ID": "gid://shopify/Product/1234567890",
       },
     ],
   },
@@ -148,6 +151,61 @@ export function createWorkbookFromRows({
   return {
     fileName,
     buffer: XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }),
+  };
+}
+
+export async function createWorkbookWithDropdownsFromRows({
+  fileName,
+  sheetName,
+  rows,
+  headers,
+  dropdowns,
+}: {
+  fileName: string;
+  sheetName: string;
+  rows: Record<string, string | number | boolean>[];
+  headers: string[];
+  dropdowns: Record<string, string[]>;
+}) {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet(sheetName);
+
+  worksheet.columns = headers.map((header) => ({
+    header,
+    key: header,
+    width: Math.max(14, header.length + 2),
+  }));
+
+  if (rows.length > 0) {
+    worksheet.addRows(rows);
+  } else {
+    worksheet.addRow(Object.fromEntries(headers.map((header) => [header, ""])));
+  }
+
+  for (const [header, values] of Object.entries(dropdowns)) {
+    const columnIndex = headers.indexOf(header) + 1;
+
+    if (columnIndex <= 0) {
+      continue;
+    }
+
+    for (let rowIndex = 2; rowIndex <= Math.max(rows.length + 1, 250); rowIndex += 1) {
+      worksheet.getCell(rowIndex, columnIndex).dataValidation = {
+        type: "list",
+        allowBlank: true,
+        formulae: [`"${values.join(",")}"`],
+        showErrorMessage: true,
+        errorTitle: "Choose a status",
+        error: `Use one of: ${values.join(", ")}`,
+      };
+    }
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+
+  return {
+    fileName,
+    buffer: Buffer.from(buffer),
   };
 }
 

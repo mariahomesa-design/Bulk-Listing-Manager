@@ -5,7 +5,7 @@ import {
   STOCK_TEMPLATE_HEADERS,
 } from "../models/bulk-products.server";
 import {
-  createWorkbookFromRows,
+  createWorkbookWithDropdownsFromRows,
   createTemplateWorkbook,
   templateDefinitions,
   type TemplateKey,
@@ -36,10 +36,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 async function createStockTemplateWorkbook(request: Request) {
   const { admin } = await authenticate.admin(request);
 
-  return createWorkbookFromRows({
+  return createWorkbookWithDropdownsFromRows({
     fileName: templateDefinitions["update-stock"].fileName,
     sheetName: templateDefinitions["update-stock"].sheetName,
     rows: await getStockTemplateRows(admin),
     headers: STOCK_TEMPLATE_HEADERS,
+    dropdowns: {
+      Status: ["Active", "Draft", "Unlist"],
+    },
   });
 }

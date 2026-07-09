@@ -247,9 +247,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
       const locationId = String(formData.get("locationId") || "");
+      const stockResult = await updateInventoryQuantities(
+        admin,
+        rows,
+        locationId,
+      );
+      const statusGroups = rows.reduce<
+        Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]>
+      >(
+        (groups, row) => {
+          if (row.productId && row.productStatus) {
+            groups[row.productStatus].push(row.productId);
+          }
+
+          return groups;
+        },
+        { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
+      );
+      const statusResult = [];
+
+      for (const [status, productIds] of Object.entries(statusGroups)) {
+        const uniqueProductIds = Array.from(new Set(productIds));
+
+        if (uniqueProductIds.length > 0) {
+          statusResult.push(
+            await updateProductStatuses(
+              admin,
+              uniqueProductIds,
+              status as "ACTIVE" | "DRAFT" | "ARCHIVED",
+            ),
+          );
+        }
+      }
+
       return {
         intent,
-        result: await updateInventoryQuantities(admin, rows, locationId),
+        result: {
+          stock: stockResult,
+          statuses: statusResult,
+        },
       };
     }
 
