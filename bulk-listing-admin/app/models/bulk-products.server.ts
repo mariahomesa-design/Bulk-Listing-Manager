@@ -570,8 +570,8 @@ export async function updateInventoryQuantities(
 
   const response = await admin.graphql(
     `#graphql
-      mutation BulkListingInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
-        inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
+      mutation BulkListingInventory($input: InventorySetQuantitiesInput!) {
+        inventorySetQuantities(input: $input) {
           inventoryAdjustmentGroup {
             createdAt
             reason
@@ -597,9 +597,6 @@ export async function updateInventoryQuantities(
           referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}`,
           quantities,
         },
-        idempotencyKey: `bulk-stock-${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2)}`,
       },
     },
   );
