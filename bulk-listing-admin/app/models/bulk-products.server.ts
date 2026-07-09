@@ -12,18 +12,128 @@ export type ProductRow = {
   productType?: string;
   status?: "ACTIVE" | "DRAFT" | "ARCHIVED";
   price?: string;
+  compareAtPrice?: string;
+  cost?: string;
   sku?: string;
+  barcode?: string;
+  taxable?: boolean;
+  tracked?: boolean;
+  inventoryPolicy?: "CONTINUE" | "DENY";
   quantity?: number;
+  option1Name?: string;
+  option1Value?: string;
+  option2Name?: string;
+  option2Value?: string;
+  imageLinks?: string[];
 };
 
 export type VariantUpdateRow = {
   productId: string;
   variantId: string;
   price?: string;
+  compareAtPrice?: string;
+  cost?: string;
   sku?: string;
+  barcode?: string;
+  taxable?: boolean;
+  tracked?: boolean;
+  inventoryPolicy?: "CONTINUE" | "DENY";
   inventoryItemId?: string;
   quantity?: number;
 };
+
+function rowValue(row: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key];
+
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+
+  return "";
+}
+
+function booleanValue(value: string): boolean | undefined {
+  const normalized = value.trim().toLowerCase();
+
+  if (["true", "yes", "y", "1"].includes(normalized)) {
+    return true;
+  }
+
+  if (["false", "no", "n", "0"].includes(normalized)) {
+    return false;
+  }
+
+  return undefined;
+}
+
+function numberValue(value: string): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function statusValue(value: string): "ACTIVE" | "DRAFT" | "ARCHIVED" {
+  const normalized = value.trim().toUpperCase();
+
+  if (normalized === "ACTIVE" || normalized === "ARCHIVED") {
+    return normalized;
+  }
+
+  return "DRAFT";
+}
+
+export function normalizeProductRows(
+  rows: (ProductRow | Record<string, unknown>)[],
+): ProductRow[] {
+  return rows
+    .map((row) => {
+      const raw = row as Record<string, unknown>;
+
+      if (raw.title) {
+        return row as ProductRow;
+      }
+
+      const imageLinks = Array.from({ length: 7 }, (_, index) =>
+        rowValue(raw, [`Image Link ${index + 1}`]),
+      ).filter(Boolean);
+      const continueSelling = booleanValue(
+        rowValue(raw, ["Continue selling when out of stock"]),
+      );
+      const inventoryPolicy: ProductRow["inventoryPolicy"] =
+        continueSelling === undefined
+          ? undefined
+          : continueSelling
+            ? "CONTINUE"
+            : "DENY";
+      const inventoryTracker = rowValue(raw, ["Inventory tracker"]);
+
+      return {
+        title: rowValue(raw, ["Title"]),
+        descriptionHtml: rowValue(raw, ["Description"]),
+        vendor: rowValue(raw, ["Vendor"]),
+        productType: rowValue(raw, ["Product category"]),
+        status: statusValue(rowValue(raw, ["Status"])),
+        price: rowValue(raw, ["Price"]),
+        compareAtPrice: rowValue(raw, ["Compare-at price"]),
+        cost: rowValue(raw, ["Cost per item"]),
+        sku: rowValue(raw, ["SKU"]),
+        barcode: rowValue(raw, ["Barcode"]),
+        taxable: booleanValue(rowValue(raw, ["Charge tax"])),
+        tracked: inventoryTracker
+          ? inventoryTracker.toLowerCase() === "shopify"
+          : undefined,
+        inventoryPolicy,
+        quantity: numberValue(rowValue(raw, ["Inventory quantity"])),
+        option1Name: rowValue(raw, ["Option1 name"]),
+        option1Value: rowValue(raw, ["Option1 value"]),
+        option2Name: rowValue(raw, ["Option2 name"]),
+        option2Value: rowValue(raw, ["Option2 value"]),
+        imageLinks,
+      };
+    })
+    .filter((row) => row.title);
+}
 
 const PRODUCT_LIST_QUERY = `#graphql
   query ProductBulkManagerProducts {
@@ -123,10 +233,22 @@ export async function createProducts(
   const created = [];
 
   for (const row of rows) {
+    const productOptions = [
+      row.option1Name && row.option1Value
+        ? { name: row.option1Name, values: [{ name: row.option1Value }] }
+        : undefined,
+      row.option2Name && row.option2Value
+        ? { name: row.option2Name, values: [{ name: row.option2Value }] }
+        : undefined,
+    ].filter(Boolean);
+    const media = (row.imageLinks || []).map((url) => ({
+      mediaContentType: "IMAGE",
+      originalSource: url,
+    }));
     const response = await admin.graphql(
       `#graphql
-        mutation BulkListingProductCreate($product: ProductCreateInput!) {
-          productCreate(product: $product) {
+        mutation BulkListingProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+          productCreate(product: $product, media: $media) {
             product {
               id
               title
@@ -156,7 +278,9 @@ export async function createProducts(
             vendor: row.vendor || undefined,
             productType: row.productType || undefined,
             status: row.status || "DRAFT",
+            productOptions: productOptions.length ? productOptions : undefined,
           },
+          media: media.length ? media : undefined,
         },
       },
     );
@@ -171,13 +295,29 @@ export async function createProducts(
     const product = json.data.productCreate.product;
     const variant = product.variants.edges[0]?.node;
 
-    if (variant && (row.price || row.sku)) {
+    if (
+      variant &&
+      (row.price ||
+        row.sku ||
+        row.compareAtPrice ||
+        row.cost ||
+        row.barcode ||
+        row.taxable !== undefined ||
+        row.tracked !== undefined ||
+        row.inventoryPolicy)
+    ) {
       await updateVariantPrices(admin, [
         {
           productId: product.id,
           variantId: variant.id,
           price: row.price,
+          compareAtPrice: row.compareAtPrice,
+          cost: row.cost,
           sku: row.sku,
+          barcode: row.barcode,
+          taxable: row.taxable,
+          tracked: row.tracked,
+          inventoryPolicy: row.inventoryPolicy,
         },
       ]);
     }
@@ -239,6 +379,12 @@ export async function updateProductStatuses(
   return updated;
 }
 
+function compactObject<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  );
+}
+
 export async function updateVariantPrices(
   admin: GraphqlClient,
   rows: VariantUpdateRow[],
@@ -272,11 +418,26 @@ export async function updateVariantPrices(
       {
         variables: {
           productId,
-          variants: variants.map((variant) => ({
-            id: variant.variantId,
-            price: variant.price,
-            inventoryItem: variant.sku ? { sku: variant.sku } : undefined,
-          })),
+          variants: variants.map((variant) => {
+            const inventoryItem = compactObject({
+              sku: variant.sku,
+              cost: variant.cost,
+              tracked: variant.tracked,
+            });
+
+            return compactObject({
+              id: variant.variantId,
+              price: variant.price,
+              compareAtPrice: variant.compareAtPrice,
+              barcode: variant.barcode,
+              taxable: variant.taxable,
+              inventoryPolicy: variant.inventoryPolicy,
+              inventoryItem:
+                Object.keys(inventoryItem).length > 0
+                  ? inventoryItem
+                  : undefined,
+            });
+          }),
         },
       },
     );

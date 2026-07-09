@@ -13,6 +13,7 @@ import {
   addProductsToCollection,
   createProducts,
   getBulkManagerData,
+  normalizeProductRows,
   parseJsonRows,
   updateInventoryQuantities,
   updateProductStatuses,
@@ -155,10 +156,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     if (intent === "create-products") {
-      const rows = await getRowsFromUpload<ProductRow>(
-        formData,
-        "productsFile",
-        "products",
+      const rows = normalizeProductRows(
+        await getRowsFromUpload<Record<string, unknown> | ProductRow>(
+          formData,
+          "productsFile",
+          "products",
+        ),
       );
       return {
         intent,
