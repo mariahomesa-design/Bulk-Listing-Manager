@@ -1,0 +1,334 @@
+.shell {
+  display: grid;
+  gap: 16px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 8px 0 32px;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+}
+
+.titleBlock {
+  display: grid;
+  gap: 4px;
+}
+
+.eyebrow {
+  color: #616161;
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: #202223;
+  font-size: 24px;
+  line-height: 30px;
+}
+
+.subtitle {
+  margin: 0;
+  color: #616161;
+  font-size: 14px;
+}
+
+.statusStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.metric {
+  min-height: 76px;
+  padding: 14px;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.metricValue {
+  color: #202223;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 26px;
+}
+
+.metricLabel {
+  margin-top: 4px;
+  color: #616161;
+  font-size: 13px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.toolGrid {
+  display: grid;
+  gap: 14px;
+}
+
+.tool {
+  overflow: hidden;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+
+.toolHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #edf0f2;
+  background: #fafbfb;
+}
+
+.toolTitle {
+  margin: 0;
+  color: #202223;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.toolMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid #d8dde3;
+  border-radius: 999px;
+  color: #4a4a4a;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toolBody {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.templateRow {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #8c9196;
+  border-radius: 6px;
+  color: #202223;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.download:hover {
+  background: #f6f6f7;
+}
+
+.fileInput {
+  width: 100%;
+  min-height: 34px;
+  color: #202223;
+  font-size: 13px;
+}
+
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.label {
+  color: #202223;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.select,
+.textarea {
+  width: 100%;
+  border: 1px solid #c9cccf;
+  border-radius: 6px;
+  color: #202223;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.select {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.textarea {
+  min-height: 130px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.details {
+  border-top: 1px solid #edf0f2;
+  padding-top: 12px;
+}
+
+.details summary {
+  cursor: pointer;
+  color: #616161;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.primaryButton {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #008060;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #008060;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton:disabled {
+  border-color: #babfc3;
+  background: #babfc3;
+  cursor: default;
+}
+
+.sidePanel {
+  display: grid;
+  gap: 14px;
+}
+
+.panel {
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.panelHeader {
+  padding: 14px 16px;
+  border-bottom: 1px solid #edf0f2;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.panelBody {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.productRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #edf0f2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.productTitle {
+  overflow: hidden;
+  color: #202223;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.productMeta {
+  margin-top: 3px;
+  color: #616161;
+  font-size: 12px;
+}
+
+.editButton {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d8dde3;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #202223;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.result {
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  background: #f6f6f7;
+  color: #202223;
+  font-size: 12px;
+}
+
+.warning {
+  padding: 10px 12px;
+  border: 1px solid #e0b252;
+  border-radius: 8px;
+  background: #fff8db;
+  color: #5c3f00;
+  font-size: 13px;
+}
+
+@media (max-width: 980px) {
+  .topbar,
+  .layout,
+  .fieldGrid,
+  .templateRow {
+    grid-template-columns: 1fr;
+  }
+
+  .statusStrip {
+    grid-template-columns: 1fr;
+  }
+}
+
