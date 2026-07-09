@@ -256,6 +256,7 @@ const PRODUCT_LIST_QUERY = `#graphql
                 id
                 title
                 sku
+                barcode
                 price
                 inventoryQuantity
                 inventoryItem {

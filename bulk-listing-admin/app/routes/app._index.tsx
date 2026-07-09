@@ -4,7 +4,7 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useLocation } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
@@ -94,14 +94,15 @@ function TemplateUpload({
     | "add-to-collection";
   fileName: string;
 }) {
+  const location = useLocation();
+  const downloadHref = `/app/templates/${template}${location.search}`;
+
   return (
     <div className={styles.templateRow}>
       <a
         className={styles.download}
-        href={`/app/templates/${template}`}
+        href={downloadHref}
         download
-        target="_blank"
-        rel="noreferrer"
       >
         Download template
       </a>
