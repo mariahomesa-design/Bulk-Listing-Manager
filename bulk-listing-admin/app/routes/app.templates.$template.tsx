@@ -41,6 +41,5 @@ async function createStockTemplateWorkbook(request: Request) {
     sheetName: templateDefinitions["update-stock"].sheetName,
     rows: await getStockTemplateRows(admin),
     headers: STOCK_TEMPLATE_HEADERS,
-    hiddenColumns: ["Inventory item ID"],
   });
 }

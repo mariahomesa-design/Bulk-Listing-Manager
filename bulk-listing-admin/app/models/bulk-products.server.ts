@@ -559,15 +559,30 @@ export async function updateInventoryQuantities(
     throw new Error("Add stock values in the New stock column before uploading.");
   }
 
+  const quantities = rows
+    .filter((row) => row.inventoryItemId && row.quantity !== undefined)
+    .map((row) => ({
+      inventoryItemId: row.inventoryItemId,
+      locationId,
+      quantity: row.quantity,
+      compareQuantity: null,
+    }));
+
   const response = await admin.graphql(
     `#graphql
-      mutation BulkListingInventory($input: InventorySetQuantitiesInput!) {
-        inventorySetQuantities(input: $input) {
+      mutation BulkListingInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
+        inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
           inventoryAdjustmentGroup {
             createdAt
             reason
+            changes {
+              name
+              delta
+              quantityAfterChange
+            }
           }
           userErrors {
+            code
             field
             message
           }
@@ -576,23 +591,38 @@ export async function updateInventoryQuantities(
     {
       variables: {
         input: {
+          ignoreCompareQuantity: true,
           name: "available",
           reason: "correction",
-          quantities: rows
-            .filter((row) => row.inventoryItemId && row.quantity !== undefined)
-            .map((row) => ({
-              inventoryItemId: row.inventoryItemId,
-              locationId,
-              quantity: row.quantity,
-              compareQuantity: null,
-            })),
+          referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}`,
+          quantities,
         },
+        idempotencyKey: `bulk-stock-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2)}`,
       },
     },
   );
 
   const json = await response.json();
-  return json.data?.inventorySetQuantities;
+
+  if (json.errors) {
+    throw new Error(JSON.stringify(json.errors));
+  }
+
+  const result = json.data?.inventorySetQuantities;
+  const userErrors = result?.userErrors || [];
+
+  if (userErrors.length) {
+    throw new Error(
+      userErrors.map((error: any) => error.message).join("; "),
+    );
+  }
+
+  return {
+    ...result,
+    updatedRows: quantities.length,
+  };
 }
 
 export async function addProductsToCollection(
