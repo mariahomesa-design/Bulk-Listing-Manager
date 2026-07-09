@@ -42,6 +42,16 @@ export type VariantUpdateRow = {
   quantity?: number;
 };
 
+export const STOCK_TEMPLATE_HEADERS = [
+  "Product title",
+  "Variant title",
+  "SKU",
+  "Barcode",
+  "Current stock",
+  "New stock",
+  "Inventory item ID",
+];
+
 function rowValue(row: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = row[key];
@@ -133,6 +143,93 @@ export function normalizeProductRows(
       };
     })
     .filter((row) => row.title);
+}
+
+export function normalizeStockRows(
+  rows: (VariantUpdateRow | Record<string, unknown>)[],
+): VariantUpdateRow[] {
+  return rows
+    .map((row) => {
+      const raw = row as Record<string, unknown>;
+
+      if (raw.inventoryItemId && raw.quantity !== undefined) {
+        return row as VariantUpdateRow;
+      }
+
+      return {
+        productId: rowValue(raw, ["productId"]),
+        variantId: rowValue(raw, ["variantId"]),
+        inventoryItemId: rowValue(raw, ["Inventory item ID", "inventoryItemId"]),
+        sku: rowValue(raw, ["SKU", "sku"]),
+        barcode: rowValue(raw, ["Barcode", "barcode"]),
+        quantity: numberValue(rowValue(raw, ["New stock", "Stock", "quantity"])),
+      };
+    })
+    .filter((row) => row.inventoryItemId && row.quantity !== undefined);
+}
+
+const STOCK_TEMPLATE_QUERY = `#graphql
+  query BulkListingStockTemplate($cursor: String) {
+    productVariants(first: 250, after: $cursor) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          title
+          sku
+          barcode
+          inventoryQuantity
+          product {
+            title
+          }
+          inventoryItem {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+
+export async function getStockTemplateRows(admin: GraphqlClient) {
+  const rows: Record<string, string | number>[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(STOCK_TEMPLATE_QUERY, {
+      variables: { cursor },
+    });
+    const json = await response.json();
+
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
+
+    const variants = json.data?.productVariants;
+
+    for (const edge of variants?.edges || []) {
+      const variant = edge.node;
+
+      rows.push({
+        "Product title": variant.product?.title || "",
+        "Variant title": variant.title || "",
+        SKU: variant.sku || "",
+        Barcode: variant.barcode || "",
+        "Current stock": variant.inventoryQuantity ?? "",
+        "New stock": "",
+        "Inventory item ID": variant.inventoryItem?.id || "",
+      });
+    }
+
+    hasNextPage = Boolean(variants?.pageInfo?.hasNextPage);
+    cursor = variants?.pageInfo?.endCursor || null;
+  }
+
+  return rows;
 }
 
 const PRODUCT_LIST_QUERY = `#graphql
@@ -455,6 +552,10 @@ export async function updateInventoryQuantities(
 ) {
   if (!locationId) {
     throw new Error("Choose an inventory location before updating stock.");
+  }
+
+  if (!rows.some((row) => row.inventoryItemId && row.quantity !== undefined)) {
+    throw new Error("Add stock values in the New stock column before uploading.");
   }
 
   const response = await admin.graphql(

@@ -10,7 +10,7 @@ export type TemplateKey =
 type TemplateDefinition = {
   fileName: string;
   sheetName: string;
-  rows: Record<string, string | number>[];
+  rows: Record<string, string | number | boolean>[];
 };
 
 export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
@@ -77,10 +77,13 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
     sheetName: "Update stock",
     rows: [
       {
-        productId: "gid://shopify/Product/1234567890",
-        variantId: "gid://shopify/ProductVariant/1234567890",
-        inventoryItemId: "gid://shopify/InventoryItem/1234567890",
-        quantity: 12,
+        "Product title": "Cotton T-Shirt",
+        "Variant title": "Medium / White",
+        SKU: "TEE-001",
+        Barcode: "1234567890123",
+        "Current stock": 20,
+        "New stock": "",
+        "Inventory item ID": "gid://shopify/InventoryItem/1234567890",
       },
     ],
   },
@@ -97,13 +100,53 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
 
 export function createTemplateWorkbook(templateKey: TemplateKey) {
   const template = templateDefinitions[templateKey];
-  const workbook = XLSX.utils.book_new();
-  const worksheet = XLSX.utils.json_to_sheet(template.rows);
 
-  XLSX.utils.book_append_sheet(workbook, worksheet, template.sheetName);
+  return createWorkbookFromRows({
+    fileName: template.fileName,
+    sheetName: template.sheetName,
+    rows: template.rows,
+  });
+}
+
+export function createWorkbookFromRows({
+  fileName,
+  sheetName,
+  rows,
+  headers,
+  hiddenColumns = [],
+}: {
+  fileName: string;
+  sheetName: string;
+  rows: Record<string, string | number | boolean>[];
+  headers?: string[];
+  hiddenColumns?: string[];
+}) {
+  const workbook = XLSX.utils.book_new();
+  const resolvedHeaders =
+    headers ||
+    Array.from(
+      rows.reduce((keys, row) => {
+        Object.keys(row).forEach((key) => keys.add(key));
+        return keys;
+      }, new Set<string>()),
+    );
+  const worksheetRows =
+    rows.length > 0
+      ? rows
+      : [Object.fromEntries(resolvedHeaders.map((header) => [header, ""]))];
+  const worksheet = XLSX.utils.json_to_sheet(worksheetRows, {
+    header: resolvedHeaders,
+  });
+
+  worksheet["!cols"] = resolvedHeaders.map((header) => ({
+    wch: Math.max(14, header.length + 2),
+    hidden: hiddenColumns.includes(header),
+  }));
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
 
   return {
-    fileName: template.fileName,
+    fileName,
     buffer: XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }),
   };
 }
