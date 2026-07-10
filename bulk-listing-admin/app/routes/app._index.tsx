@@ -71,6 +71,73 @@ const sampleVariantUpdates = JSON.stringify(
   2,
 );
 
+type CreateProductReportRow = {
+  row: number;
+  title: string;
+  sku: string;
+  barcode: string;
+  status: string;
+  message: string;
+  productId: string;
+};
+
+function escapeSpreadsheetXml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function downloadCreateProductsReport(rows: CreateProductReportRow[]) {
+  const headers = ["Row", "Title", "SKU", "Barcode", "Status", "Message", "Product ID"];
+  const sheetRows = rows.map((row) => [
+    row.row,
+    row.title,
+    row.sku,
+    row.barcode,
+    row.status,
+    row.message,
+    row.productId,
+  ]);
+  const xmlRows = [headers, ...sheetRows]
+    .map(
+      (cells) =>
+        `<Row>${cells
+          .map(
+            (cell) =>
+              `<Cell><Data ss:Type="String">${escapeSpreadsheetXml(cell)}</Data></Cell>`,
+          )
+          .join("")}</Row>`,
+    )
+    .join("");
+  const xml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Worksheet ss:Name="Create products result">
+  <Table>${xmlRows}</Table>
+ </Worksheet>
+</Workbook>`;
+  const blob = new Blob([xml], {
+    type: "application/vnd.ms-excel;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = `create-products-result-${new Date()
+    .toISOString()
+    .slice(0, 19)
+    .replace(/[:T]/g, "-")}.xls`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function getRowsFromUpload<T>(
   formData: FormData,
   fileField: string,
@@ -361,6 +428,12 @@ export default function BulkProducts() {
   const shopify = useAppBridge();
   const isSubmitting = fetcher.state !== "idle";
   const hasLocations = locations.length > 0;
+  const createProductReportRows =
+    fetcher.data?.intent === "create-products" &&
+    fetcher.data?.result &&
+    "reportRows" in fetcher.data.result
+      ? (fetcher.data.result.reportRows as CreateProductReportRow[])
+      : [];
 
   useEffect(() => {
     if (fetcher.data?.result) {
@@ -609,6 +682,17 @@ export default function BulkProducts() {
               <section className={styles.panel}>
                 <div className={styles.panelHeader}>Last action result</div>
                 <div className={styles.panelBody}>
+                  {createProductReportRows.length > 0 && (
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      onClick={() =>
+                        downloadCreateProductsReport(createProductReportRows)
+                      }
+                    >
+                      Download result Excel
+                    </button>
+                  )}
                   <pre className={styles.result}>
                     <code>{JSON.stringify(fetcher.data, null, 2)}</code>
                   </pre>

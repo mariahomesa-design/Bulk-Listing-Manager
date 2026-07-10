@@ -237,6 +237,22 @@
   cursor: default;
 }
 
+.secondaryButton {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #8c9196;
+  border-radius: 6px;
+  color: #202223;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.secondaryButton:hover {
+  background: #f6f6f7;
+}
+
 .sidePanel {
   display: grid;
   gap: 14px;
@@ -331,4 +347,3 @@
     grid-template-columns: 1fr;
   }
 }
-

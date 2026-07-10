@@ -34,6 +34,16 @@ export type ProductRow = {
   imageLinks?: string[];
 };
 
+type CreateProductReportRow = {
+  row: number;
+  title: string;
+  sku: string;
+  barcode: string;
+  status: "Success" | "Error" | "Warning";
+  message: string;
+  productId: string;
+};
+
 export type VariantUpdateRow = {
   productId: string;
   variantId: string;
@@ -615,15 +625,124 @@ async function publishProductToPublications(
   }
 }
 
+function barcodeSearchQuery(barcode: string) {
+  return `barcode:"${barcode.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+async function findExistingVariantByBarcode(
+  admin: GraphqlClient,
+  barcode: string,
+) {
+  const response = await admin.graphql(
+    `#graphql
+      query BulkListingFindBarcode($query: String!) {
+        productVariants(first: 1, query: $query) {
+          edges {
+            node {
+              id
+              barcode
+              product {
+                id
+                title
+              }
+            }
+          }
+        }
+      }`,
+    { variables: { query: barcodeSearchQuery(barcode) } },
+  );
+  const json = await response.json();
+
+  if (json.errors?.length) {
+    throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+  }
+
+  return json.data?.productVariants?.edges?.[0]?.node;
+}
+
+async function getExistingBarcodes(
+  admin: GraphqlClient,
+  rows: ProductRow[],
+) {
+  const barcodes = Array.from(
+    new Set(rows.map((row) => row.barcode?.trim()).filter(Boolean)),
+  ) as string[];
+  const existing = new Map<string, { productId: string; title: string }>();
+
+  for (const barcode of barcodes) {
+    const variant = await findExistingVariantByBarcode(admin, barcode);
+
+    if (variant?.barcode === barcode) {
+      existing.set(barcode, {
+        productId: variant.product?.id || "",
+        title: variant.product?.title || "",
+      });
+    }
+  }
+
+  return existing;
+}
+
+function duplicateUploadedBarcodes(rows: ProductRow[]) {
+  const counts = new Map<string, number>();
+
+  for (const row of rows) {
+    const barcode = row.barcode?.trim();
+
+    if (barcode) {
+      counts.set(barcode, (counts.get(barcode) || 0) + 1);
+    }
+  }
+
+  return new Set(
+    Array.from(counts.entries())
+      .filter(([, count]) => count > 1)
+      .map(([barcode]) => barcode),
+  );
+}
+
 export async function createProducts(
   admin: GraphqlClient,
   rows: ProductRow[],
   locationId: string,
 ) {
   const created = [];
+  const reportRows: CreateProductReportRow[] = [];
+  const existingBarcodes = await getExistingBarcodes(admin, rows);
+  const duplicateBarcodes = duplicateUploadedBarcodes(rows);
   let publicationIds: string[] | undefined;
 
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    const reportBase = {
+      row: index + 2,
+      title: row.title,
+      sku: row.sku || "",
+      barcode: row.barcode || "",
+    };
+    const existingBarcode = row.barcode
+      ? existingBarcodes.get(row.barcode.trim())
+      : undefined;
+
+    if (row.barcode && duplicateBarcodes.has(row.barcode.trim())) {
+      reportRows.push({
+        ...reportBase,
+        status: "Error",
+        message: "Barcode is duplicated in the uploaded file.",
+        productId: "",
+      });
+      continue;
+    }
+
+    if (existingBarcode) {
+      reportRows.push({
+        ...reportBase,
+        status: "Error",
+        message: `Barcode already exists on product "${existingBarcode.title}".`,
+        productId: existingBarcode.productId,
+      });
+      continue;
+    }
+
     const status = row.publish ? "ACTIVE" : row.status || "DRAFT";
     const productOptions = [
       row.option1Name && row.option1Value
@@ -682,6 +801,12 @@ export async function createProducts(
 
     if (errors.length) {
       created.push({ title: row.title, errors });
+      reportRows.push({
+        ...reportBase,
+        status: "Error",
+        message: errors.map((error: { message: string }) => error.message).join("; "),
+        productId: "",
+      });
       continue;
     }
 
@@ -740,20 +865,42 @@ export async function createProducts(
         await publishProductToPublications(admin, product.id, publicationIds);
       }
     } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Product was created, but a follow-up update failed.";
       created.push({
         ...product,
-        warning:
-          error instanceof Error
-            ? error.message
-            : "Product was created, but a follow-up update failed.",
+        warning: message,
+      });
+      reportRows.push({
+        ...reportBase,
+        status: "Warning",
+        message: `Product created, but follow-up update failed: ${message}`,
+        productId: product.id,
       });
       continue;
     }
 
     created.push(product);
+    reportRows.push({
+      ...reportBase,
+      status: "Success",
+      message: "Product created successfully.",
+      productId: product.id,
+    });
   }
 
-  return created;
+  return {
+    created,
+    summary: {
+      total: reportRows.length,
+      success: reportRows.filter((row) => row.status === "Success").length,
+      warning: reportRows.filter((row) => row.status === "Warning").length,
+      error: reportRows.filter((row) => row.status === "Error").length,
+    },
+    reportRows,
+  };
 }
 
 export async function updateProductStatuses(
