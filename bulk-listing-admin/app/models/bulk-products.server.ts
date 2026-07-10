@@ -67,6 +67,8 @@ export type ProductActionRow = {
 
 export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
+  "Current stock",
+  "Current status",
   "Action",
   "Product ID",
 ];
@@ -372,10 +374,12 @@ const BULK_DELETE_TEMPLATE_QUERY = `#graphql
       edges {
         node {
           id
+          status
           variants(first: 1) {
             edges {
               node {
                 barcode
+                inventoryQuantity
               }
             }
           }
@@ -408,6 +412,13 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
 
       rows.push({
         Barcode: variant?.barcode || "",
+        "Current stock": variant?.inventoryQuantity ?? "",
+        "Current status":
+          product.status === "ACTIVE"
+            ? "Active"
+            : product.status === "ARCHIVED"
+              ? "Unlist"
+              : "Draft",
         Action: "",
         "Product ID": product.id || "",
       });
