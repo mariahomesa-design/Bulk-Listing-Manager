@@ -397,8 +397,6 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
       const variant = product.variants?.edges?.[0]?.node;
 
       rows.push({
-        "Product title": product.title || "",
-        SKU: variant?.sku || "",
         Barcode: variant?.barcode || "",
         Action: "",
         "Product ID": product.id || "",
@@ -414,6 +412,12 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
 
 const PRODUCT_LIST_QUERY = `#graphql
   query ProductBulkManagerProducts {
+    productsCount {
+      count
+    }
+    collectionsCount {
+      count
+    }
     products(first: 25, sortKey: UPDATED_AT, reverse: true) {
       edges {
         node {
@@ -483,8 +487,10 @@ export async function getBulkManagerData(admin: GraphqlClient) {
 
   return {
     products: json.data?.products?.edges.map((edge: any) => edge.node) || [],
+    productCount: json.data?.productsCount?.count,
     collections:
       json.data?.collections?.edges.map((edge: any) => edge.node) || [],
+    collectionCount: json.data?.collectionsCount?.count,
     locations: json.data?.locations?.edges.map((edge: any) => edge.node) || [],
   };
 }

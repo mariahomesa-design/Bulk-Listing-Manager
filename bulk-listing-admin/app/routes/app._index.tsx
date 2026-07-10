@@ -355,7 +355,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function BulkProducts() {
-  const { products, collections, locations } = useLoaderData<typeof loader>();
+  const { products, productCount, collections, collectionCount, locations } =
+    useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const isSubmitting = fetcher.state !== "idle";
@@ -385,11 +386,15 @@ export default function BulkProducts() {
           </div>
           <div className={styles.statusStrip}>
             <div className={styles.metric}>
-              <div className={styles.metricValue}>{products.length}</div>
+              <div className={styles.metricValue}>
+                {(productCount ?? products.length).toLocaleString()}
+              </div>
               <div className={styles.metricLabel}>Products</div>
             </div>
             <div className={styles.metric}>
-              <div className={styles.metricValue}>{collections.length}</div>
+              <div className={styles.metricValue}>
+                {(collectionCount ?? collections.length).toLocaleString()}
+              </div>
               <div className={styles.metricLabel}>Collections</div>
             </div>
             <div className={styles.metric}>
