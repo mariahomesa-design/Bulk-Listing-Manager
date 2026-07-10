@@ -154,6 +154,12 @@
   background: #f6f6f7;
 }
 
+.download:disabled {
+  color: #6d7175;
+  background: #f1f2f3;
+  cursor: default;
+}
+
 .fileInput {
   width: 100%;
   min-height: 34px;

@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -166,17 +166,67 @@ function TemplateUpload({
   fileName: string;
 }) {
   const location = useLocation();
+  const shopify = useAppBridge() as unknown as {
+    idToken?: () => Promise<string>;
+    toast?: {
+      show: (message: string, options?: { isError?: boolean }) => void;
+    };
+  };
+  const [isDownloading, setIsDownloading] = useState(false);
   const downloadHref = `/app/templates/${template}${location.search}`;
+  const downloadTemplate = async () => {
+    setIsDownloading(true);
+
+    try {
+      const token = await shopify.idToken?.();
+      const response = await fetch(downloadHref, {
+        credentials: "include",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const contentType = response.headers.get("Content-Type") || "";
+
+      if (!response.ok) {
+        throw new Error(`Template download failed (${response.status}).`);
+      }
+
+      if (contentType.includes("text/html")) {
+        throw new Error("Shopify session refreshed. Reload the app and try again.");
+      }
+
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const fileNameMatch = disposition.match(/filename="?([^"]+)"?/i);
+      const resolvedFileName =
+        fileNameMatch?.[1] || `${template}-template.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = resolvedFileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      shopify.toast?.show(
+        error instanceof Error ? error.message : "Template download failed.",
+        { isError: true },
+      );
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   return (
     <div className={styles.templateRow}>
-      <a
+      <button
         className={styles.download}
-        href={downloadHref}
-        download
+        type="button"
+        disabled={isDownloading}
+        onClick={downloadTemplate}
       >
-        Download template
-      </a>
+        {isDownloading ? "Downloading..." : "Download template"}
+      </button>
       <input
         className={styles.fileInput}
         type="file"
