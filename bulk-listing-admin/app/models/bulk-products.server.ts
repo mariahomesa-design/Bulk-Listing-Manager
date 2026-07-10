@@ -93,6 +93,20 @@ function numberValue(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function decimalStringValue(value: string) {
+  const normalized = value.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    throw new Error(`Invalid decimal value "${value}". Use numbers like 10 or 10.50.`);
+  }
+
+  return normalized;
+}
+
 function statusValue(value: string): "ACTIVE" | "DRAFT" | "ARCHIVED" {
   const normalized = value.trim().toUpperCase();
 
@@ -169,9 +183,9 @@ export function normalizeProductRows(
         vendor: rowValue(raw, ["Vendor"]),
         category: categoryIdValue(rowValue(raw, ["Product category"])),
         status: statusValue(rowValue(raw, ["Status"])),
-        price: rowValue(raw, ["Price"]),
-        compareAtPrice: rowValue(raw, ["Compare-at price"]),
-        cost: rowValue(raw, ["Cost per item"]),
+        price: decimalStringValue(rowValue(raw, ["Price"])),
+        compareAtPrice: decimalStringValue(rowValue(raw, ["Compare-at price"])),
+        cost: decimalStringValue(rowValue(raw, ["Cost per item"])),
         sku: rowValue(raw, ["SKU"]),
         barcode: rowValue(raw, ["Barcode"]),
         taxable: booleanValue(rowValue(raw, ["Charge tax"])),
@@ -586,14 +600,16 @@ export async function updateVariantPrices(
           variants: variants.map((variant) => {
             const inventoryItem = compactObject({
               sku: variant.sku,
-              cost: variant.cost,
+              cost: decimalStringValue(String(variant.cost || "")),
               tracked: variant.tracked,
             });
 
             return compactObject({
               id: variant.variantId,
-              price: variant.price,
-              compareAtPrice: variant.compareAtPrice,
+              price: decimalStringValue(String(variant.price || "")),
+              compareAtPrice: decimalStringValue(
+                String(variant.compareAtPrice || ""),
+              ),
               barcode: variant.barcode,
               taxable: variant.taxable,
               inventoryPolicy: variant.inventoryPolicy,
@@ -607,7 +623,21 @@ export async function updateVariantPrices(
       },
     );
     const json = await response.json();
-    updated.push(json.data?.productVariantsBulkUpdate);
+
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
+
+    const result = json.data?.productVariantsBulkUpdate;
+    const userErrors = result?.userErrors || [];
+
+    if (userErrors.length) {
+      throw new Error(
+        userErrors.map((error: any) => error.message).join("; "),
+      );
+    }
+
+    updated.push(result);
   }
 
   return updated;
