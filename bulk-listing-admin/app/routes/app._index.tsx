@@ -265,6 +265,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
       );
       const statusResult = [];
+      const totalStatusUpdates = Object.values(statusGroups).reduce(
+        (count, productIds) => count + new Set(productIds).size,
+        0,
+      );
+
+      if (totalStatusUpdates > 250) {
+        return {
+          intent,
+          result: {
+            stock: stockResult,
+            statuses: [],
+            statusWarning:
+              "Stock was updated. More than 250 status changes were selected, so status changes were skipped to avoid a timeout. Upload status changes in smaller files.",
+          },
+        };
+      }
 
       for (const [status, productIds] of Object.entries(statusGroups)) {
         const uniqueProductIds = Array.from(new Set(productIds));

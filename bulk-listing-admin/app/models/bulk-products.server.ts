@@ -56,6 +56,7 @@ export const STOCK_TEMPLATE_HEADERS = [
   "Barcode",
   "Current stock",
   "New stock",
+  "Current status",
   "Status",
   "Inventory item ID",
   "Product ID",
@@ -268,12 +269,13 @@ export async function getStockTemplateRows(admin: GraphqlClient) {
         Barcode: variant.barcode || "",
         "Current stock": variant.inventoryQuantity ?? "",
         "New stock": "",
-        Status:
+        "Current status":
           variant.product?.status === "ACTIVE"
             ? "Active"
             : variant.product?.status === "ARCHIVED"
               ? "Unlist"
               : "Draft",
+        Status: "",
         "Inventory item ID": variant.inventoryItem?.id || "",
         "Product ID": variant.product?.id || "",
       });
