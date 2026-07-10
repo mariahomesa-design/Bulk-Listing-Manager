@@ -412,12 +412,6 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
 
 const PRODUCT_LIST_QUERY = `#graphql
   query ProductBulkManagerProducts {
-    productsCount {
-      count
-    }
-    collectionsCount {
-      count
-    }
     products(first: 25, sortKey: UPDATED_AT, reverse: true) {
       edges {
         node {
@@ -471,6 +465,17 @@ const PRODUCT_LIST_QUERY = `#graphql
   }
 `;
 
+const STORE_COUNT_QUERY = `#graphql
+  query ProductBulkManagerCounts {
+    productsCount {
+      count
+    }
+    collectionsCount {
+      count
+    }
+  }
+`;
+
 export async function getBulkManagerData(admin: GraphqlClient) {
   const response = await admin.graphql(PRODUCT_LIST_QUERY);
   const json = await response.json();
@@ -485,12 +490,28 @@ export async function getBulkManagerData(admin: GraphqlClient) {
     }
   }
 
+  let counts: { productCount?: number; collectionCount?: number } = {};
+
+  try {
+    const countResponse = await admin.graphql(STORE_COUNT_QUERY);
+    const countJson = await countResponse.json();
+
+    if (!countJson.errors?.length) {
+      counts = {
+        productCount: countJson.data?.productsCount?.count,
+        collectionCount: countJson.data?.collectionsCount?.count,
+      };
+    }
+  } catch {
+    counts = {};
+  }
+
   return {
     products: json.data?.products?.edges.map((edge: any) => edge.node) || [],
-    productCount: json.data?.productsCount?.count,
+    productCount: counts.productCount,
     collections:
       json.data?.collections?.edges.map((edge: any) => edge.node) || [],
-    collectionCount: json.data?.collectionsCount?.count,
+    collectionCount: counts.collectionCount,
     locations: json.data?.locations?.edges.map((edge: any) => edge.node) || [],
   };
 }
@@ -667,55 +688,66 @@ export async function createProducts(
     const product = json.data.productCreate.product;
     const variant = product.variants.edges[0]?.node;
 
-    if (
-      variant &&
-      (row.price ||
-        row.sku ||
-        row.compareAtPrice ||
-        row.cost ||
-        row.barcode ||
-        row.taxable !== undefined ||
-        row.tracked !== undefined ||
-        row.inventoryPolicy)
-    ) {
-      await updateVariantPrices(admin, [
-        {
-          productId: product.id,
-          variantId: variant.id,
-          price: row.price,
-          compareAtPrice: row.compareAtPrice,
-          cost: row.cost,
-          sku: row.sku,
-          barcode: row.barcode,
-          taxable: row.taxable,
-          inventoryPolicy: row.inventoryPolicy,
-          tracked: row.tracked ?? row.quantity !== undefined,
-        },
-      ]);
-    }
-
-    if (
-      variant?.inventoryItem?.id &&
-      locationId &&
-      row.quantity !== undefined
-    ) {
-      await updateInventoryQuantities(
-        admin,
-        [
+    try {
+      if (
+        variant &&
+        (row.price ||
+          row.sku ||
+          row.compareAtPrice ||
+          row.cost ||
+          row.barcode ||
+          row.taxable !== undefined ||
+          row.tracked !== undefined ||
+          row.inventoryPolicy)
+      ) {
+        await updateVariantPrices(admin, [
           {
             productId: product.id,
             variantId: variant.id,
-            inventoryItemId: variant.inventoryItem.id,
-            quantity: row.quantity,
+            price: row.price,
+            compareAtPrice: row.compareAtPrice,
+            cost: row.cost,
+            sku: row.sku,
+            barcode: row.barcode,
+            taxable: row.taxable,
+            inventoryPolicy: row.inventoryPolicy,
+            tracked: row.tracked ?? row.quantity !== undefined,
           },
-        ],
-        locationId,
-      );
-    }
+        ]);
+      }
 
-    if (row.publish) {
-      publicationIds = publicationIds || (await getPublicationIds(admin));
-      await publishProductToPublications(admin, product.id, publicationIds);
+      if (
+        variant?.inventoryItem?.id &&
+        locationId &&
+        row.quantity !== undefined
+      ) {
+        await updateInventoryQuantities(
+          admin,
+          [
+            {
+              productId: product.id,
+              variantId: variant.id,
+              inventoryItemId: variant.inventoryItem.id,
+              quantity: row.quantity,
+            },
+          ],
+          locationId,
+        );
+      }
+
+      if (row.publish) {
+        publicationIds = publicationIds || (await getPublicationIds(admin));
+        await publishProductToPublications(admin, product.id, publicationIds);
+      }
+    } catch (error) {
+      created.push({
+        ...product,
+        warning:
+          error instanceof Error
+            ? error.message
+            : "Product was created, but a follow-up update failed.",
+      });
+      continue;
     }
 
     created.push(product);
