@@ -34,7 +34,7 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
         Description: "<p>Modern dining table</p>",
         Vendor: "MARIA HOMES",
         "Product category": "Furniture > Tables",
-        "Published on online store": "TRUE",
+        Publish: "TRUE",
         Status: "DRAFT",
         SKU: "TABLE-001",
         Barcode: "1234567890123",

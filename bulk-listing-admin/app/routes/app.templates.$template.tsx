@@ -58,7 +58,7 @@ async function createProductTemplateWorkbook() {
     headers: Object.keys(templateDefinitions["create-products"].rows[0] || {}),
     dropdowns: {
       Status: ["ACTIVE", "DRAFT", "ARCHIVED"],
-      "Published on online store": ["TRUE", "FALSE"],
+      Publish: ["TRUE", "FALSE"],
       "Charge tax": ["TRUE", "FALSE"],
       "Inventory tracker": ["shopify", ""],
       "Continue selling when out of stock": ["TRUE", "FALSE"],

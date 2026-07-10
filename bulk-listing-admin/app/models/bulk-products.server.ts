@@ -16,6 +16,7 @@ export type ProductRow = {
   vendor?: string;
   category?: string;
   productType?: string;
+  publish?: boolean;
   status?: "ACTIVE" | "DRAFT" | "ARCHIVED";
   price?: string;
   compareAtPrice?: string;
@@ -182,6 +183,9 @@ export function normalizeProductRows(
         descriptionHtml: rowValue(raw, ["Description"]),
         vendor: rowValue(raw, ["Vendor"]),
         category: categoryIdValue(rowValue(raw, ["Product category"])),
+        publish: booleanValue(
+          rowValue(raw, ["Publish", "Published on online store"]),
+        ),
         status: statusValue(rowValue(raw, ["Status"])),
         price: decimalStringValue(rowValue(raw, ["Price"])),
         compareAtPrice: decimalStringValue(rowValue(raw, ["Compare-at price"])),
@@ -393,14 +397,101 @@ export function parseJsonRows<T>(value: FormDataEntryValue | null): T[] {
   return parsed;
 }
 
+async function getPublicationIds(admin: GraphqlClient) {
+  const publicationIds: string[] = [];
+  let cursor: string | null = null;
+
+  do {
+    const response = await admin.graphql(
+      `#graphql
+        query BulkListingPublications($cursor: String) {
+          publications(first: 250, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                id
+              }
+            }
+          }
+        }`,
+      { variables: { cursor } },
+    );
+    const json = await response.json();
+
+    if (json.errors?.length) {
+      throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+    }
+
+    publicationIds.push(
+      ...(json.data?.publications?.edges || []).map(
+        (edge: { node: { id: string } }) => edge.node.id,
+      ),
+    );
+    cursor = json.data?.publications?.pageInfo?.hasNextPage
+      ? json.data.publications.pageInfo.endCursor
+      : null;
+  } while (cursor);
+
+  return publicationIds;
+}
+
+async function publishProductToPublications(
+  admin: GraphqlClient,
+  productId: string,
+  publicationIds: string[],
+) {
+  if (!publicationIds.length) {
+    return;
+  }
+
+  const response = await admin.graphql(
+    `#graphql
+      mutation BulkListingPublishProduct(
+        $id: ID!
+        $input: [PublicationInput!]!
+      ) {
+        publishablePublish(id: $id, input: $input) {
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+    {
+      variables: {
+        id: productId,
+        input: publicationIds.map((publicationId) => ({ publicationId })),
+      },
+    },
+  );
+  const json = await response.json();
+
+  if (json.errors?.length) {
+    throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+  }
+
+  const errors = json.data?.publishablePublish?.userErrors || [];
+
+  if (errors.length) {
+    throw new Error(
+      errors.map((error: { message: string }) => error.message).join(", "),
+    );
+  }
+}
+
 export async function createProducts(
   admin: GraphqlClient,
   rows: ProductRow[],
   locationId: string,
 ) {
   const created = [];
+  let publicationIds: string[] | undefined;
 
   for (const row of rows) {
+    const status = row.publish ? "ACTIVE" : row.status || "DRAFT";
     const productOptions = [
       row.option1Name && row.option1Value
         ? { name: row.option1Name, values: [{ name: row.option1Value }] }
@@ -446,7 +537,7 @@ export async function createProducts(
             vendor: row.vendor || undefined,
             category: row.category || undefined,
             productType: row.productType || undefined,
-            status: row.status || "DRAFT",
+            status,
             productOptions: productOptions.length ? productOptions : undefined,
           },
           media: media.length ? media : undefined,
@@ -508,6 +599,11 @@ export async function createProducts(
         ],
         locationId,
       );
+    }
+
+    if (row.publish) {
+      publicationIds = publicationIds || (await getPublicationIds(admin));
+      await publishProductToPublications(admin, product.id, publicationIds);
     }
 
     created.push(product);
