@@ -1,5 +1,15 @@
 import ExcelJS from "exceljs";
 import * as XLSX from "xlsx";
+import shopifyProductCategories from "../data/shopify-product-categories.json";
+
+export type ShopifyProductCategory = {
+  id: string;
+  name: string;
+  label: string;
+};
+
+export const shopifyCategoryOptions =
+  shopifyProductCategories as ShopifyProductCategory[];
 
 export type TemplateKey =
   | "create-products"
@@ -20,13 +30,13 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
     sheetName: "Create products",
     rows: [
       {
-        Title: "Cotton T-Shirt",
-        Description: "<p>Soft cotton shirt</p>",
+        Title: "Dining Table",
+        Description: "<p>Modern dining table</p>",
         Vendor: "MARIA HOMES",
-        "Product category": "Apparel",
+        "Product category": "Furniture > Tables",
         "Published on online store": "TRUE",
         Status: "DRAFT",
-        SKU: "TEE-001",
+        SKU: "TABLE-001",
         Barcode: "1234567890123",
         "Option1 name": "Size",
         "Option1 value": "Medium",
@@ -160,12 +170,14 @@ export async function createWorkbookWithDropdownsFromRows({
   rows,
   headers,
   dropdowns,
+  dropdownSources,
 }: {
   fileName: string;
   sheetName: string;
   rows: Record<string, string | number | boolean>[];
   headers: string[];
   dropdowns: Record<string, string[]>;
+  dropdownSources?: Record<string, string[]>;
 }) {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet(sheetName);
@@ -189,7 +201,7 @@ export async function createWorkbookWithDropdownsFromRows({
       continue;
     }
 
-    for (let rowIndex = 2; rowIndex <= Math.max(rows.length + 1, 250); rowIndex += 1) {
+    for (let rowIndex = 2; rowIndex <= Math.max(rows.length + 1, 10000); rowIndex += 1) {
       worksheet.getCell(rowIndex, columnIndex).dataValidation = {
         type: "list",
         allowBlank: true,
@@ -197,6 +209,36 @@ export async function createWorkbookWithDropdownsFromRows({
         showErrorMessage: true,
         errorTitle: "Choose a status",
         error: `Use one of: ${values.join(", ")}`,
+      };
+    }
+  }
+
+  for (const [header, values] of Object.entries(dropdownSources || {})) {
+    const columnIndex = headers.indexOf(header) + 1;
+
+    if (columnIndex <= 0 || values.length === 0) {
+      continue;
+    }
+
+    const sourceSheetName = `${header.replace(/[^a-z0-9]/gi, "").slice(0, 20)}List`;
+    const sourceSheet = workbook.addWorksheet(sourceSheetName, {
+      state: "veryHidden",
+    });
+
+    values.forEach((value, index) => {
+      sourceSheet.getCell(index + 1, 1).value = value;
+    });
+
+    const range = `'${sourceSheetName}'!$A$1:$A$${values.length}`;
+
+    for (let rowIndex = 2; rowIndex <= Math.max(rows.length + 1, 10000); rowIndex += 1) {
+      worksheet.getCell(rowIndex, columnIndex).dataValidation = {
+        type: "list",
+        allowBlank: true,
+        formulae: [range],
+        showErrorMessage: true,
+        errorTitle: `Choose ${header}`,
+        error: `Choose a value from the ${header} dropdown.`,
       };
     }
   }

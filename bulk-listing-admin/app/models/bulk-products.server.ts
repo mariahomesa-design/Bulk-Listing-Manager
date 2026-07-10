@@ -1,3 +1,8 @@
+import {
+  shopifyCategoryOptions,
+  type ShopifyProductCategory,
+} from "./bulk-spreadsheets.server";
+
 type GraphqlClient = {
   graphql: (
     query: string,
@@ -9,6 +14,7 @@ export type ProductRow = {
   title: string;
   descriptionHtml?: string;
   vendor?: string;
+  category?: string;
   productType?: string;
   status?: "ACTIVE" | "DRAFT" | "ARCHIVED";
   price?: string;
@@ -110,6 +116,27 @@ function optionalStatusValue(
   return value.trim() ? statusValue(value) : undefined;
 }
 
+const categoryByLabel = new Map<string, ShopifyProductCategory>(
+  shopifyCategoryOptions.map((category) => [category.label, category]),
+);
+const categoryById = new Map<string, ShopifyProductCategory>(
+  shopifyCategoryOptions.map((category) => [category.id, category]),
+);
+
+function categoryIdValue(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (categoryById.has(trimmed)) {
+    return trimmed;
+  }
+
+  return categoryByLabel.get(trimmed)?.id;
+}
+
 export function normalizeProductRows(
   rows: (ProductRow | Record<string, unknown>)[],
 ): ProductRow[] {
@@ -139,7 +166,7 @@ export function normalizeProductRows(
         title: rowValue(raw, ["Title"]),
         descriptionHtml: rowValue(raw, ["Description"]),
         vendor: rowValue(raw, ["Vendor"]),
-        productType: rowValue(raw, ["Product category"]),
+        category: categoryIdValue(rowValue(raw, ["Product category"])),
         status: statusValue(rowValue(raw, ["Status"])),
         price: rowValue(raw, ["Price"]),
         compareAtPrice: rowValue(raw, ["Compare-at price"]),
@@ -401,6 +428,7 @@ export async function createProducts(
             title: row.title,
             descriptionHtml: row.descriptionHtml || undefined,
             vendor: row.vendor || undefined,
+            category: row.category || undefined,
             productType: row.productType || undefined,
             status: row.status || "DRAFT",
             productOptions: productOptions.length ? productOptions : undefined,
@@ -441,8 +469,8 @@ export async function createProducts(
           sku: row.sku,
           barcode: row.barcode,
           taxable: row.taxable,
-          tracked: row.tracked,
           inventoryPolicy: row.inventoryPolicy,
+          tracked: row.tracked ?? row.quantity !== undefined,
         },
       ]);
     }
@@ -508,6 +536,16 @@ function compactObject<T extends Record<string, unknown>>(value: T) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
+}
+
+function chunkArray<T>(values: T[], size: number) {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+
+  return chunks;
 }
 
 export async function updateVariantPrices(
@@ -595,56 +633,61 @@ export async function updateInventoryQuantities(
       compareQuantity: null,
     }));
 
-  const response = await admin.graphql(
-    `#graphql
-      mutation BulkListingInventory($input: InventorySetQuantitiesInput!) {
-        inventorySetQuantities(input: $input) {
-          inventoryAdjustmentGroup {
-            createdAt
-            reason
-            changes {
-              name
-              delta
-              quantityAfterChange
-            }
-          }
-          userErrors {
-            code
-            field
-            message
+  const results = [];
+  const mutation = `#graphql
+    mutation BulkListingInventory($input: InventorySetQuantitiesInput!) {
+      inventorySetQuantities(input: $input) {
+        inventoryAdjustmentGroup {
+          createdAt
+          reason
+          changes {
+            name
+            delta
+            quantityAfterChange
           }
         }
-      }`,
-    {
+        userErrors {
+          code
+          field
+          message
+        }
+      }
+    }`;
+
+  for (const [index, quantityChunk] of chunkArray(quantities, 250).entries()) {
+    const response = await admin.graphql(mutation, {
       variables: {
         input: {
           ignoreCompareQuantity: true,
           name: "available",
           reason: "correction",
-          referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}`,
-          quantities,
+          referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}-${index + 1}`,
+          quantities: quantityChunk,
         },
       },
-    },
-  );
+    });
 
-  const json = await response.json();
+    const json = await response.json();
 
-  if (json.errors) {
-    throw new Error(JSON.stringify(json.errors));
-  }
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
 
-  const result = json.data?.inventorySetQuantities;
-  const userErrors = result?.userErrors || [];
+    const result = json.data?.inventorySetQuantities;
+    const userErrors = result?.userErrors || [];
 
-  if (userErrors.length) {
-    throw new Error(
-      userErrors.map((error: any) => error.message).join("; "),
-    );
+    if (userErrors.length) {
+      throw new Error(
+        userErrors.map((error: any) => error.message).join("; "),
+      );
+    }
+
+    results.push(result);
   }
 
   return {
-    ...result,
+    batches: results.length,
+    results,
     updatedRows: quantities.length,
   };
 }

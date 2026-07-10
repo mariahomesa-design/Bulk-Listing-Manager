@@ -7,6 +7,7 @@ import {
 import {
   createWorkbookWithDropdownsFromRows,
   createTemplateWorkbook,
+  shopifyCategoryOptions,
   templateDefinitions,
   type TemplateKey,
 } from "../models/bulk-spreadsheets.server";
@@ -21,6 +22,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const workbook =
     template === "update-stock"
       ? await createStockTemplateWorkbook(request)
+      : template === "create-products"
+        ? await createProductTemplateWorkbook()
       : createTemplateWorkbook(template);
 
   return new Response(workbook.buffer, {
@@ -43,6 +46,25 @@ async function createStockTemplateWorkbook(request: Request) {
     headers: STOCK_TEMPLATE_HEADERS,
     dropdowns: {
       Status: ["Active", "Draft", "Unlist"],
+    },
+  });
+}
+
+async function createProductTemplateWorkbook() {
+  return createWorkbookWithDropdownsFromRows({
+    fileName: templateDefinitions["create-products"].fileName,
+    sheetName: templateDefinitions["create-products"].sheetName,
+    rows: templateDefinitions["create-products"].rows,
+    headers: Object.keys(templateDefinitions["create-products"].rows[0] || {}),
+    dropdowns: {
+      Status: ["ACTIVE", "DRAFT", "ARCHIVED"],
+      "Published on online store": ["TRUE", "FALSE"],
+      "Charge tax": ["TRUE", "FALSE"],
+      "Inventory tracker": ["shopify", ""],
+      "Continue selling when out of stock": ["TRUE", "FALSE"],
+    },
+    dropdownSources: {
+      "Product category": shopifyCategoryOptions.map((category) => category.label),
     },
   });
 }
