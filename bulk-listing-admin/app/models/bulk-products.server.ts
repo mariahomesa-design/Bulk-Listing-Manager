@@ -50,6 +50,17 @@ export type VariantUpdateRow = {
   productStatus?: "ACTIVE" | "DRAFT" | "ARCHIVED";
 };
 
+export type ProductActionRow = {
+  productId: string;
+  action?: "ACTIVE" | "DRAFT" | "ARCHIVED" | "DELETE";
+};
+
+export const BULK_DELETE_TEMPLATE_HEADERS = [
+  "Barcode",
+  "Action",
+  "Product ID",
+];
+
 export const STOCK_TEMPLATE_HEADERS = [
   "Product title",
   "Variant title",
@@ -130,6 +141,22 @@ function optionalStatusValue(
   value: string,
 ): "ACTIVE" | "DRAFT" | "ARCHIVED" | undefined {
   return value.trim() ? statusValue(value) : undefined;
+}
+
+function productActionValue(
+  value: string,
+): ProductActionRow["action"] | undefined {
+  const normalized = value.trim().toUpperCase();
+
+  if (["DELETE", "DELET"].includes(normalized)) {
+    return "DELETE";
+  }
+
+  if (["ACTIVE", "DRAFT", "ARCHIVED", "UNLIST", "UNLISTED"].includes(normalized)) {
+    return statusValue(normalized);
+  }
+
+  return undefined;
 }
 
 const categoryByLabel = new Map<string, ShopifyProductCategory>(
@@ -232,6 +259,25 @@ export function normalizeStockRows(
     .filter((row) => row.inventoryItemId && row.quantity !== undefined);
 }
 
+export function normalizeProductActionRows(
+  rows: (ProductActionRow | Record<string, unknown>)[],
+): ProductActionRow[] {
+  return rows
+    .map((row) => {
+      const raw = row as Record<string, unknown>;
+
+      if (raw.productId && raw.action) {
+        return row as ProductActionRow;
+      }
+
+      return {
+        productId: rowValue(raw, ["Product ID", "productId"]),
+        action: productActionValue(rowValue(raw, ["Action", "Status", "status"])),
+      };
+    })
+    .filter((row) => row.productId && row.action);
+}
+
 const STOCK_TEMPLATE_QUERY = `#graphql
   query BulkListingStockTemplate($cursor: String) {
     productVariants(first: 250, after: $cursor) {
@@ -301,6 +347,66 @@ export async function getStockTemplateRows(admin: GraphqlClient) {
 
     hasNextPage = Boolean(variants?.pageInfo?.hasNextPage);
     cursor = variants?.pageInfo?.endCursor || null;
+  }
+
+  return rows;
+}
+
+const BULK_DELETE_TEMPLATE_QUERY = `#graphql
+  query BulkListingProductActionTemplate($cursor: String) {
+    products(first: 250, after: $cursor) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          variants(first: 1) {
+            edges {
+              node {
+                barcode
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
+  const rows: Record<string, string>[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(BULK_DELETE_TEMPLATE_QUERY, {
+      variables: { cursor },
+    });
+    const json = await response.json();
+
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
+
+    const products = json.data?.products;
+
+    for (const edge of products?.edges || []) {
+      const product = edge.node;
+      const variant = product.variants?.edges?.[0]?.node;
+
+      rows.push({
+        "Product title": product.title || "",
+        SKU: variant?.sku || "",
+        Barcode: variant?.barcode || "",
+        Action: "",
+        "Product ID": product.id || "",
+      });
+    }
+
+    hasNextPage = Boolean(products?.pageInfo?.hasNextPage);
+    cursor = products?.pageInfo?.endCursor || null;
   }
 
   return rows;
@@ -642,6 +748,88 @@ export async function updateProductStatuses(
   }
 
   return updated;
+}
+
+export async function deleteProducts(admin: GraphqlClient, productIds: string[]) {
+  const deleted = [];
+
+  for (const id of productIds) {
+    const response = await admin.graphql(
+      `#graphql
+        mutation BulkListingProductDelete($input: ProductDeleteInput!) {
+          productDelete(input: $input) {
+            deletedProductId
+            userErrors {
+              field
+              message
+            }
+          }
+        }`,
+      { variables: { input: { id } } },
+    );
+    const json = await response.json();
+
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
+
+    const result = json.data?.productDelete;
+    const userErrors = result?.userErrors || [];
+
+    if (userErrors.length) {
+      throw new Error(
+        userErrors.map((error: any) => error.message).join("; "),
+      );
+    }
+
+    deleted.push(result);
+  }
+
+  return deleted;
+}
+
+export async function applyProductActions(
+  admin: GraphqlClient,
+  rows: ProductActionRow[],
+) {
+  const statusGroups: Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]> = {
+    ACTIVE: [],
+    DRAFT: [],
+    ARCHIVED: [],
+  };
+  const deleteIds: string[] = [];
+
+  for (const row of rows) {
+    if (row.action === "DELETE") {
+      deleteIds.push(row.productId);
+      continue;
+    }
+
+    if (row.action) {
+      statusGroups[row.action].push(row.productId);
+    }
+  }
+
+  const statuses = [];
+
+  for (const [status, productIds] of Object.entries(statusGroups)) {
+    const uniqueProductIds = Array.from(new Set(productIds));
+
+    if (uniqueProductIds.length > 0) {
+      statuses.push(
+        await updateProductStatuses(
+          admin,
+          uniqueProductIds,
+          status as "ACTIVE" | "DRAFT" | "ARCHIVED",
+        ),
+      );
+    }
+  }
+
+  return {
+    statuses,
+    deleted: await deleteProducts(admin, Array.from(new Set(deleteIds))),
+  };
 }
 
 function compactObject<T extends Record<string, unknown>>(value: T) {

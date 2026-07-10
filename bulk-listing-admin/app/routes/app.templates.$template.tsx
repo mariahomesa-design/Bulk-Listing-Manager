@@ -1,6 +1,8 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import {
+  BULK_DELETE_TEMPLATE_HEADERS,
+  getBulkDeleteTemplateRows,
   getStockTemplateRows,
   STOCK_TEMPLATE_HEADERS,
 } from "../models/bulk-products.server";
@@ -22,6 +24,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const workbook =
     template === "update-stock"
       ? await createStockTemplateWorkbook(request)
+      : template === "bulk-delete"
+        ? await createBulkDeleteTemplateWorkbook(request)
       : template === "create-products"
         ? await createProductTemplateWorkbook()
       : createTemplateWorkbook(template);
@@ -46,6 +50,21 @@ async function createStockTemplateWorkbook(request: Request) {
     headers: STOCK_TEMPLATE_HEADERS,
     dropdowns: {
       Status: ["Active", "Draft", "Unlist"],
+    },
+  });
+}
+
+async function createBulkDeleteTemplateWorkbook(request: Request) {
+  const { admin } = await authenticate.admin(request);
+
+  return createWorkbookWithDropdownsFromRows({
+    fileName: templateDefinitions["bulk-delete"].fileName,
+    sheetName: templateDefinitions["bulk-delete"].sheetName,
+    rows: await getBulkDeleteTemplateRows(admin),
+    headers: BULK_DELETE_TEMPLATE_HEADERS,
+    hiddenColumns: ["Product ID"],
+    dropdowns: {
+      Action: ["Active", "Draft", "Unlist", "Delete"],
     },
   });
 }

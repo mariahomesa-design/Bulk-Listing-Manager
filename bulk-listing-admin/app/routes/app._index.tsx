@@ -11,14 +11,17 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import {
   addProductsToCollection,
+  applyProductActions,
   createProducts,
   getBulkManagerData,
+  normalizeProductActionRows,
   normalizeProductRows,
   normalizeStockRows,
   parseJsonRows,
   updateInventoryQuantities,
   updateProductStatuses,
   updateVariantPrices,
+  type ProductActionRow,
   type ProductRow,
   type VariantUpdateRow,
 } from "../models/bulk-products.server";
@@ -88,6 +91,7 @@ function TemplateUpload({
 }: {
   template:
     | "create-products"
+    | "bulk-delete"
     | "update-status"
     | "update-prices"
     | "update-stock"
@@ -238,6 +242,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     }
 
+    if (intent === "bulk-delete") {
+      const rows = normalizeProductActionRows(
+        await getRowsFromUpload<Record<string, unknown> | ProductActionRow>(
+          formData,
+          "productActionsFile",
+          "productActions",
+        ),
+      );
+
+      if (rows.length === 0) {
+        throw new Error(
+          "Choose Active, Draft, Unlist, or Delete in the Action column before uploading.",
+        );
+      }
+
+      return {
+        intent,
+        result: await applyProductActions(admin, rows),
+      };
+    }
+
     if (intent === "update-stock") {
       const rows = normalizeStockRows(
         await getRowsFromUpload<Record<string, unknown> | VariantUpdateRow>(
@@ -346,12 +371,6 @@ export default function BulkProducts() {
     }
   }, [fetcher.data, shopify]);
 
-  const productIdsSample = JSON.stringify(
-    products.slice(0, 3).map((product: any) => product.id),
-    null,
-    2,
-  );
-
   return (
     <s-page heading="Bulk Listing Manager">
       <div className={styles.shell}>
@@ -438,32 +457,26 @@ export default function BulkProducts() {
             </ToolCard>
 
             <ToolCard
-              title="Update listing status"
-              badges={["active", "draft", "archived"]}
+              title="Bulk delete / status"
+              badges={["barcode", "active", "draft", "delete"]}
             >
               <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="update-status" />
+                <input type="hidden" name="intent" value="bulk-delete" />
                 <div className={styles.toolBody}>
                   <TemplateUpload
-                    template="update-status"
-                    fileName="productIdsFile"
+                    template="bulk-delete"
+                    fileName="productActionsFile"
                   />
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor="status">
-                      Default status
-                    </label>
-                    <select className={styles.select} id="status" name="status">
-                      <option value="ACTIVE">Active</option>
-                      <option value="DRAFT">Draft</option>
-                      <option value="ARCHIVED">Unlisted / archived</option>
-                    </select>
+                  <div className={styles.warning}>
+                    Only rows with an Action selected will be changed. Delete
+                    permanently removes those products from Shopify.
                   </div>
                   <details className={styles.details}>
                     <summary>JSON fallback</summary>
                     <textarea
                       className={styles.textarea}
-                      name="productIds"
-                      defaultValue={productIdsSample}
+                      name="productActions"
+                      defaultValue="[]"
                     />
                   </details>
                   <div className={styles.actions}>
@@ -472,7 +485,7 @@ export default function BulkProducts() {
                       type="submit"
                       disabled={isSubmitting}
                     >
-                      Update status
+                      Apply actions
                     </button>
                   </div>
                 </div>
@@ -557,53 +570,6 @@ export default function BulkProducts() {
               </fetcher.Form>
             </ToolCard>
 
-            <ToolCard
-              title="Add products to collection"
-              badges={["collections", "bulk assignment"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="add-to-collection" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload
-                    template="add-to-collection"
-                    fileName="productIdsFile"
-                  />
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor="collectionId">
-                      Collection
-                    </label>
-                    <select
-                      className={styles.select}
-                      id="collectionId"
-                      name="collectionId"
-                    >
-                      {collections.map((collection: any) => (
-                        <option key={collection.id} value={collection.id}>
-                          {collection.title}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="productIds"
-                      defaultValue={productIdsSample}
-                    />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Add to collection
-                    </button>
-                  </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>
           </div>
 
           <aside className={styles.sidePanel}>

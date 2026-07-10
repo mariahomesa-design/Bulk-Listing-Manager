@@ -13,10 +13,11 @@ export const shopifyCategoryOptions =
 
 export type TemplateKey =
   | "create-products"
-  | "update-status"
+  | "bulk-delete"
   | "update-prices"
   | "update-stock"
-  | "add-to-collection";
+  | "add-to-collection"
+  | "update-status";
 
 type TemplateDefinition = {
   fileName: string;
@@ -58,6 +59,17 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
         "Image Link 5": "",
         "Image Link 6": "",
         "Image Link 7": "",
+      },
+    ],
+  },
+  "bulk-delete": {
+    fileName: "bulk-delete-status-template.xlsx",
+    sheetName: "Bulk delete",
+    rows: [
+      {
+        Barcode: "1234567890123",
+        Action: "",
+        "Product ID": "gid://shopify/Product/1234567890",
       },
     ],
   },
@@ -172,6 +184,7 @@ export async function createWorkbookWithDropdownsFromRows({
   headers,
   dropdowns,
   dropdownSources,
+  hiddenColumns = [],
 }: {
   fileName: string;
   sheetName: string;
@@ -179,6 +192,7 @@ export async function createWorkbookWithDropdownsFromRows({
   headers: string[];
   dropdowns: Record<string, string[]>;
   dropdownSources?: Record<string, string[]>;
+  hiddenColumns?: string[];
 }) {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet(sheetName);
@@ -187,6 +201,7 @@ export async function createWorkbookWithDropdownsFromRows({
     header,
     key: header,
     width: Math.max(14, header.length + 2),
+    hidden: hiddenColumns.includes(header),
   }));
 
   if (rows.length > 0) {
