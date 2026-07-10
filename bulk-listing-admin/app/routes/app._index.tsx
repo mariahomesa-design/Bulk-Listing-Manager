@@ -15,6 +15,7 @@ import {
   createProducts,
   getBulkManagerData,
   normalizeProductActionRows,
+  normalizePriceRows,
   normalizeProductRows,
   normalizeStockRows,
   parseJsonRows,
@@ -348,10 +349,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     if (intent === "update-prices") {
-      const rows = await getRowsFromUpload<VariantUpdateRow>(
-        formData,
-        "variantsFile",
-        "variants",
+      const rows = normalizePriceRows(
+        await getRowsFromUpload<Record<string, unknown> | VariantUpdateRow>(
+          formData,
+          "variantsFile",
+          "variants",
+        ),
       );
       return {
         intent,

@@ -73,6 +73,16 @@ export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Product ID",
 ];
 
+export const PRICE_TEMPLATE_HEADERS = [
+  "Barcode",
+  "Current price",
+  "Current compare price",
+  "New price",
+  "New compare price",
+  "Variant ID",
+  "Product ID",
+];
+
 export const STOCK_TEMPLATE_HEADERS = [
   "Product title",
   "Variant title",
@@ -271,6 +281,31 @@ export function normalizeStockRows(
     .filter((row) => row.inventoryItemId && row.quantity !== undefined);
 }
 
+export function normalizePriceRows(
+  rows: (VariantUpdateRow | Record<string, unknown>)[],
+): VariantUpdateRow[] {
+  return rows
+    .map((row) => {
+      const raw = row as Record<string, unknown>;
+
+      if (raw.productId && raw.variantId) {
+        return row as VariantUpdateRow;
+      }
+
+      return {
+        productId: rowValue(raw, ["Product ID", "productId"]),
+        variantId: rowValue(raw, ["Variant ID", "variantId"]),
+        sku: rowValue(raw, ["SKU", "sku"]),
+        barcode: rowValue(raw, ["Barcode", "barcode"]),
+        price: decimalStringValue(rowValue(raw, ["New price", "price"])),
+        compareAtPrice: decimalStringValue(
+          rowValue(raw, ["New compare price", "compareAtPrice"]),
+        ),
+      };
+    })
+    .filter((row) => row.productId && row.variantId && (row.price || row.compareAtPrice));
+}
+
 export function normalizeProductActionRows(
   rows: (ProductActionRow | Record<string, unknown>)[],
 ): ProductActionRow[] {
@@ -317,6 +352,66 @@ const STOCK_TEMPLATE_QUERY = `#graphql
     }
   }
 `;
+
+const PRICE_TEMPLATE_QUERY = `#graphql
+  query BulkListingPriceTemplate($cursor: String) {
+    productVariants(first: 250, after: $cursor) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          barcode
+          price
+          compareAtPrice
+          product {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+
+export async function getPriceTemplateRows(admin: GraphqlClient) {
+  const rows: Record<string, string>[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(PRICE_TEMPLATE_QUERY, {
+      variables: { cursor },
+    });
+    const json = await response.json();
+
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
+
+    const variants = json.data?.productVariants;
+
+    for (const edge of variants?.edges || []) {
+      const variant = edge.node;
+
+      rows.push({
+        Barcode: variant.barcode || "",
+        "Current price": variant.price || "",
+        "Current compare price": variant.compareAtPrice || "",
+        "New price": "",
+        "New compare price": "",
+        "Variant ID": variant.id || "",
+        "Product ID": variant.product?.id || "",
+      });
+    }
+
+    hasNextPage = Boolean(variants?.pageInfo?.hasNextPage);
+    cursor = variants?.pageInfo?.endCursor || null;
+  }
+
+  return rows;
+}
 
 export async function getStockTemplateRows(admin: GraphqlClient) {
   const rows: Record<string, string | number>[] = [];
@@ -1128,6 +1223,10 @@ export async function updateVariantPrices(
   admin: GraphqlClient,
   rows: VariantUpdateRow[],
 ) {
+  if (!rows.length) {
+    throw new Error("Add values in New price or New compare price before uploading.");
+  }
+
   const byProduct = rows.reduce<Record<string, VariantUpdateRow[]>>(
     (groups, row) => {
       groups[row.productId] ||= [];
@@ -1139,68 +1238,77 @@ export async function updateVariantPrices(
   const updated = [];
 
   for (const [productId, variants] of Object.entries(byProduct)) {
-    const response = await admin.graphql(
-      `#graphql
-        mutation BulkListingVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-            productVariants {
-              id
-              price
-              sku
+    for (const chunk of chunkArray(variants, 100)) {
+      const response = await admin.graphql(
+        `#graphql
+          mutation BulkListingVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              productVariants {
+                id
+              }
+              userErrors {
+                field
+                message
+              }
             }
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-      {
-        variables: {
-          productId,
-          variants: variants.map((variant) => {
-            const inventoryItem = compactObject({
-              sku: variant.sku,
-              cost: decimalStringValue(String(variant.cost || "")),
-              tracked: variant.tracked,
-            });
+          }`,
+        {
+          variables: {
+            productId,
+            variants: chunk.map((variant) => {
+              const inventoryItem = compactObject({
+                sku: variant.sku,
+                cost: decimalStringValue(String(variant.cost || "")),
+                tracked: variant.tracked,
+              });
 
-            return compactObject({
-              id: variant.variantId,
-              price: decimalStringValue(String(variant.price || "")),
-              compareAtPrice: decimalStringValue(
-                String(variant.compareAtPrice || ""),
-              ),
-              barcode: variant.barcode,
-              taxable: variant.taxable,
-              inventoryPolicy: variant.inventoryPolicy,
-              inventoryItem:
-                Object.keys(inventoryItem).length > 0
-                  ? inventoryItem
-                  : undefined,
-            });
-          }),
+              return compactObject({
+                id: variant.variantId,
+                price: decimalStringValue(String(variant.price || "")),
+                compareAtPrice: decimalStringValue(
+                  String(variant.compareAtPrice || ""),
+                ),
+                barcode: variant.barcode,
+                taxable: variant.taxable,
+                inventoryPolicy: variant.inventoryPolicy,
+                inventoryItem:
+                  Object.keys(inventoryItem).length > 0
+                    ? inventoryItem
+                    : undefined,
+              });
+            }),
+          },
         },
-      },
-    );
-    const json = await response.json();
-
-    if (json.errors) {
-      throw new Error(JSON.stringify(json.errors));
-    }
-
-    const result = json.data?.productVariantsBulkUpdate;
-    const userErrors = result?.userErrors || [];
-
-    if (userErrors.length) {
-      throw new Error(
-        userErrors.map((error: any) => error.message).join("; "),
       );
-    }
+      const json = await response.json();
 
-    updated.push(result);
+      if (json.errors) {
+        throw new Error(JSON.stringify(json.errors));
+      }
+
+      const result = json.data?.productVariantsBulkUpdate;
+      const userErrors = result?.userErrors || [];
+
+      if (userErrors.length) {
+        throw new Error(
+          userErrors.map((error: any) => error.message).join("; "),
+        );
+      }
+
+      updated.push({
+        productId,
+        updated: result?.productVariants?.length || chunk.length,
+      });
+    }
   }
 
-  return updated;
+  return {
+    summary: {
+      products: updated.length,
+      variants: updated.reduce((count, row) => count + row.updated, 0),
+    },
+    rows: updated,
+  };
 }
 
 export async function updateInventoryQuantities(
