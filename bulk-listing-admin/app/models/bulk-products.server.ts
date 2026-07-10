@@ -919,69 +919,118 @@ export async function updateProductStatuses(
   productIds: string[],
   status: "ACTIVE" | "DRAFT" | "ARCHIVED",
 ) {
-  const updated = [];
-
-  for (const id of productIds) {
-    const response = await admin.graphql(
-      `#graphql
-        mutation BulkListingProductStatus($product: ProductUpdateInput!) {
-          productUpdate(product: $product) {
-            product {
-              id
-              title
-              status
+  return mapWithConcurrency(Array.from(new Set(productIds)), 6, async (id) => {
+    try {
+      const response = await admin.graphql(
+        `#graphql
+          mutation BulkListingProductStatus($product: ProductUpdateInput!) {
+            productUpdate(product: $product) {
+              product {
+                id
+                status
+              }
+              userErrors {
+                field
+                message
+              }
             }
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-      { variables: { product: { id, status } } },
-    );
-    const json = await response.json();
-    updated.push(json.data?.productUpdate);
-  }
+          }`,
+        { variables: { product: { id, status } } },
+      );
+      const json = await response.json();
 
-  return updated;
+      if (json.errors?.length) {
+        return {
+          productId: id,
+          action: status,
+          success: false,
+          message: json.errors.map((error: any) => error.message).join("; "),
+        };
+      }
+
+      const result = json.data?.productUpdate;
+      const userErrors = result?.userErrors || [];
+
+      if (userErrors.length) {
+        return {
+          productId: id,
+          action: status,
+          success: false,
+          message: userErrors.map((error: any) => error.message).join("; "),
+        };
+      }
+
+      return {
+        productId: id,
+        action: status,
+        success: true,
+        message: "Status updated.",
+      };
+    } catch (error) {
+      return {
+        productId: id,
+        action: status,
+        success: false,
+        message: error instanceof Error ? error.message : "Status update failed.",
+      };
+    }
+  });
 }
 
 export async function deleteProducts(admin: GraphqlClient, productIds: string[]) {
-  const deleted = [];
-
-  for (const id of productIds) {
-    const response = await admin.graphql(
-      `#graphql
-        mutation BulkListingProductDelete($input: ProductDeleteInput!) {
-          productDelete(input: $input) {
-            deletedProductId
-            userErrors {
-              field
-              message
+  return mapWithConcurrency(Array.from(new Set(productIds)), 4, async (id) => {
+    try {
+      const response = await admin.graphql(
+        `#graphql
+          mutation BulkListingProductDelete($input: ProductDeleteInput!) {
+            productDelete(input: $input) {
+              deletedProductId
+              userErrors {
+                field
+                message
+              }
             }
-          }
-        }`,
-      { variables: { input: { id } } },
-    );
-    const json = await response.json();
-
-    if (json.errors) {
-      throw new Error(JSON.stringify(json.errors));
-    }
-
-    const result = json.data?.productDelete;
-    const userErrors = result?.userErrors || [];
-
-    if (userErrors.length) {
-      throw new Error(
-        userErrors.map((error: any) => error.message).join("; "),
+          }`,
+        { variables: { input: { id } } },
       );
+      const json = await response.json();
+
+      if (json.errors?.length) {
+        return {
+          productId: id,
+          action: "DELETE",
+          success: false,
+          message: json.errors.map((error: any) => error.message).join("; "),
+        };
+      }
+
+      const result = json.data?.productDelete;
+      const userErrors = result?.userErrors || [];
+
+      if (userErrors.length) {
+        return {
+          productId: id,
+          action: "DELETE",
+          success: false,
+          message: userErrors.map((error: any) => error.message).join("; "),
+        };
+      }
+
+      return {
+        productId: result?.deletedProductId || id,
+        action: "DELETE",
+        success: true,
+        message: "Product deleted.",
+      };
+    } catch (error) {
+      return {
+        productId: id,
+        action: "DELETE",
+        success: false,
+        message: error instanceof Error ? error.message : "Delete failed.",
+      };
     }
-
-    deleted.push(result);
-  }
-
-  return deleted;
+  });
 }
 
 export async function applyProductActions(
@@ -1022,9 +1071,17 @@ export async function applyProductActions(
     }
   }
 
+  const deleted = await deleteProducts(admin, Array.from(new Set(deleteIds)));
+  const statusRows = statuses.flat();
+  const allRows = [...statusRows, ...deleted];
+
   return {
-    statuses,
-    deleted: await deleteProducts(admin, Array.from(new Set(deleteIds))),
+    summary: {
+      total: allRows.length,
+      success: allRows.filter((row) => row.success).length,
+      error: allRows.filter((row) => !row.success).length,
+    },
+    rows: allRows,
   };
 }
 
@@ -1042,6 +1099,29 @@ function chunkArray<T>(values: T[], size: number) {
   }
 
   return chunks;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>,
+) {
+  const results: R[] = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < values.length) {
+      const currentIndex = index;
+      index += 1;
+      results[currentIndex] = await mapper(values[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, () => worker()),
+  );
+
+  return results;
 }
 
 export async function updateVariantPrices(
