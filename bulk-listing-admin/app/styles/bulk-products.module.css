@@ -79,6 +79,7 @@
 
 .tool {
   overflow: hidden;
+  scroll-margin-top: 16px;
   border: 1px solid #dfe3e8;
   border-radius: 8px;
   background: #ffffff;

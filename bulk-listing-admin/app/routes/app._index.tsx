@@ -240,16 +240,18 @@ function TemplateUpload({
 }
 
 function ToolCard({
+  id,
   title,
   badges,
   children,
 }: {
+  id?: string;
   title: string;
   badges: string[];
   children: ReactNode;
 }) {
   return (
-    <section className={styles.tool}>
+    <section className={styles.tool} id={id}>
       <div className={styles.toolHeader}>
         <div>
           <h2 className={styles.toolTitle}>{title}</h2>
@@ -533,6 +535,7 @@ export default function BulkProducts() {
         <div className={styles.layout}>
           <div className={styles.toolGrid}>
             <ToolCard
+              id="create-products"
               title="Create products"
               badges={["products", "price", "SKU", "initial stock"]}
             >
@@ -588,6 +591,7 @@ export default function BulkProducts() {
             </ToolCard>
 
             <ToolCard
+              id="bulk-delete-status"
               title="Bulk delete / status"
               badges={["barcode", "active", "draft", "delete"]}
             >
@@ -623,7 +627,11 @@ export default function BulkProducts() {
               </fetcher.Form>
             </ToolCard>
 
-            <ToolCard title="Update prices" badges={["variants", "price", "SKU"]}>
+            <ToolCard
+              id="update-prices"
+              title="Update prices"
+              badges={["variants", "price", "SKU"]}
+            >
               <fetcher.Form method="post" encType="multipart/form-data">
                 <input type="hidden" name="intent" value="update-prices" />
                 <div className={styles.toolBody}>
@@ -652,7 +660,11 @@ export default function BulkProducts() {
               </fetcher.Form>
             </ToolCard>
 
-            <ToolCard title="Update stock" badges={["inventory", "location"]}>
+            <ToolCard
+              id="update-stock"
+              title="Update stock"
+              badges={["inventory", "location"]}
+            >
               <fetcher.Form method="post" encType="multipart/form-data">
                 <input type="hidden" name="intent" value="update-stock" />
                 <div className={styles.toolBody}>
