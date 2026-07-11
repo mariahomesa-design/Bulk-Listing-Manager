@@ -4,7 +4,7 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher, useLoaderData, useLocation } from "react-router";
+import { Link, useFetcher, useLoaderData, useLocation } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
@@ -476,7 +476,189 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-export default function BulkProducts() {
+export type BulkManagerView =
+  | "dashboard"
+  | "create-products"
+  | "bulk-delete-status"
+  | "update-prices"
+  | "update-stock";
+
+const viewContent: Record<
+  Exclude<BulkManagerView, "dashboard">,
+  { eyebrow: string; title: string; description: string }
+> = {
+  "create-products": {
+    eyebrow: "Catalog creation",
+    title: "Create products",
+    description:
+      "Prepare new listings in Excel, validate their catalog data, and create them in Shopify in one controlled import.",
+  },
+  "bulk-delete-status": {
+    eyebrow: "Catalog governance",
+    title: "Bulk delete / status",
+    description:
+      "Review current product state and safely move listings between active, draft, unlisted, or deleted states.",
+  },
+  "update-prices": {
+    eyebrow: "Pricing operations",
+    title: "Update prices",
+    description:
+      "Export current variant pricing, enter new selling and compare-at prices, then apply the changes in bulk.",
+  },
+  "update-stock": {
+    eyebrow: "Inventory operations",
+    title: "Update stock",
+    description:
+      "Export current inventory by SKU and barcode, enter new quantities, and synchronize the selected Shopify location.",
+  },
+};
+
+function Dashboard({
+  products,
+  productCount,
+  collections,
+  collectionCount,
+  locations,
+  shopify,
+}: any) {
+  const workflows = [
+    {
+      number: "01",
+      title: "Create products",
+      text: "Build complete listings with pricing, variants, images, taxonomy, and opening stock.",
+      href: "/app/create-products",
+      tone: "green",
+    },
+    {
+      number: "02",
+      title: "Bulk delete / status",
+      text: "Activate, draft, unlist, or permanently delete selected products using barcode.",
+      href: "/app/bulk-delete-status",
+      tone: "red",
+    },
+    {
+      number: "03",
+      title: "Update prices",
+      text: "Change price and compare-at price across thousands of product variants.",
+      href: "/app/update-prices",
+      tone: "blue",
+    },
+    {
+      number: "04",
+      title: "Update stock",
+      text: "Synchronize inventory quantities and product visibility at the correct location.",
+      href: "/app/update-stock",
+      tone: "amber",
+    },
+  ];
+
+  return (
+    <>
+      <section className={styles.dashboardHero}>
+        <div>
+          <div className={styles.eyebrow}>Maria Homes operations</div>
+          <h1 className={styles.dashboardTitle}>Catalog command center</h1>
+          <p className={styles.dashboardSubtitle}>
+            Run high-volume Shopify catalog changes with structured Excel
+            workflows and clear results.
+          </p>
+        </div>
+        <div className={styles.liveBadge}>
+          <span className={styles.liveDot} /> Connected to Shopify
+        </div>
+      </section>
+
+      <section className={styles.metricGrid} aria-label="Store overview">
+        <div className={styles.metricCard}>
+          <span className={styles.metricCaption}>Products</span>
+          <strong>{(productCount ?? products.length).toLocaleString()}</strong>
+          <span>Live catalog count</span>
+        </div>
+        <div className={styles.metricCard}>
+          <span className={styles.metricCaption}>Collections</span>
+          <strong>{(collectionCount ?? collections.length).toLocaleString()}</strong>
+          <span>Available groups</span>
+        </div>
+        <div className={styles.metricCard}>
+          <span className={styles.metricCaption}>Locations</span>
+          <strong>{locations.length.toLocaleString()}</strong>
+          <span>Inventory destinations</span>
+        </div>
+        <div className={styles.metricCard}>
+          <span className={styles.metricCaption}>System</span>
+          <strong className={styles.healthyValue}>Ready</strong>
+          <span>Bulk tools available</span>
+        </div>
+      </section>
+
+      <div className={styles.dashboardLayout}>
+        <main>
+          <div className={styles.sectionHeading}>
+            <div>
+              <h2>Bulk workflows</h2>
+              <p>Choose the operation you want to run.</p>
+            </div>
+          </div>
+          <div className={styles.workflowGrid}>
+            {workflows.map((workflow) => (
+              <Link
+                className={`${styles.workflowCard} ${styles[workflow.tone]}`}
+                key={workflow.href}
+                to={workflow.href}
+              >
+                <span className={styles.workflowNumber}>{workflow.number}</span>
+                <div>
+                  <h3>{workflow.title}</h3>
+                  <p>{workflow.text}</p>
+                </div>
+                <span className={styles.workflowArrow} aria-hidden="true">
+                  &rarr;
+                </span>
+              </Link>
+            ))}
+          </div>
+        </main>
+
+        <aside className={styles.dashboardAside}>
+          <section className={styles.panel}>
+            <div className={styles.panelHeaderRow}>
+              <div>
+                <div className={styles.panelHeader}>Recent products</div>
+                <div className={styles.panelSubhead}>Latest catalog activity</div>
+              </div>
+              <span className={styles.countBadge}>{Math.min(products.length, 8)}</span>
+            </div>
+            <div className={styles.panelBody}>
+              {products.slice(0, 8).map((product: any) => (
+                <div className={styles.productRow} key={product.id}>
+                  <div>
+                    <div className={styles.productTitle}>{product.title}</div>
+                    <div className={styles.productMeta}>
+                      {product.status} | Stock {product.totalInventory ?? 0}
+                    </div>
+                  </div>
+                  <button
+                    className={styles.editButton}
+                    type="button"
+                    onClick={() =>
+                      shopify.intents.invoke?.("edit:shopify/Product", {
+                        value: product.id,
+                      })
+                    }
+                  >
+                    Edit
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        </aside>
+      </div>
+    </>
+  );
+}
+
+export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView }) {
   const { products, productCount, collections, collectionCount, locations } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
@@ -500,41 +682,45 @@ export default function BulkProducts() {
     }
   }, [fetcher.data, shopify]);
 
+  if (view === "dashboard") {
+    return (
+      <s-page heading="MH Bulk Manager">
+        <div className={styles.shell}>
+          <Dashboard
+            products={products}
+            productCount={productCount}
+            collections={collections}
+            collectionCount={collectionCount}
+            locations={locations}
+            shopify={shopify}
+          />
+        </div>
+      </s-page>
+    );
+  }
+
+  const page = viewContent[view];
+
   return (
-    <s-page heading="Bulk Listing Manager">
+    <s-page heading={page.title}>
       <div className={styles.shell}>
-        <div className={styles.topbar}>
+        <div className={styles.toolPageHeader}>
           <div className={styles.titleBlock}>
-            <div className={styles.eyebrow}>Catalog operations</div>
-            <h1 className={styles.title}>Bulk product control center</h1>
-            <p className={styles.subtitle}>
-              Manage products, stock, prices, status, and collections from Excel
-              files.
-            </p>
+            <Link className={styles.backLink} to="/app">&larr; Dashboard</Link>
+            <div className={styles.eyebrow}>{page.eyebrow}</div>
+            <h1 className={styles.title}>{page.title}</h1>
+            <p className={styles.subtitle}>{page.description}</p>
           </div>
-          <div className={styles.statusStrip}>
-            <div className={styles.metric}>
-              <div className={styles.metricValue}>
-                {(productCount ?? products.length).toLocaleString()}
-              </div>
-              <div className={styles.metricLabel}>Products</div>
-            </div>
-            <div className={styles.metric}>
-              <div className={styles.metricValue}>
-                {(collectionCount ?? collections.length).toLocaleString()}
-              </div>
-              <div className={styles.metricLabel}>Collections</div>
-            </div>
-            <div className={styles.metric}>
-              <div className={styles.metricValue}>{locations.length}</div>
-              <div className={styles.metricLabel}>Locations</div>
-            </div>
+          <div className={styles.stepStrip}>
+            <span><b>1</b> Download</span>
+            <span><b>2</b> Edit Excel</span>
+            <span><b>3</b> Upload &amp; apply</span>
           </div>
         </div>
 
         <div className={styles.layout}>
           <div className={styles.toolGrid}>
-            <ToolCard
+            {view === "create-products" && <ToolCard
               id="create-products"
               title="Create products"
               badges={["products", "price", "SKU", "initial stock"]}
@@ -588,9 +774,9 @@ export default function BulkProducts() {
                   </div>
                 </div>
               </fetcher.Form>
-            </ToolCard>
+            </ToolCard>}
 
-            <ToolCard
+            {view === "bulk-delete-status" && <ToolCard
               id="bulk-delete-status"
               title="Bulk delete / status"
               badges={["barcode", "active", "draft", "delete"]}
@@ -625,9 +811,9 @@ export default function BulkProducts() {
                   </div>
                 </div>
               </fetcher.Form>
-            </ToolCard>
+            </ToolCard>}
 
-            <ToolCard
+            {view === "update-prices" && <ToolCard
               id="update-prices"
               title="Update prices"
               badges={["variants", "price", "SKU"]}
@@ -658,9 +844,9 @@ export default function BulkProducts() {
                   </div>
                 </div>
               </fetcher.Form>
-            </ToolCard>
+            </ToolCard>}
 
-            <ToolCard
+            {view === "update-stock" && <ToolCard
               id="update-stock"
               title="Update stock"
               badges={["inventory", "location"]}
@@ -711,7 +897,7 @@ export default function BulkProducts() {
                   </div>
                 </div>
               </fetcher.Form>
-            </ToolCard>
+            </ToolCard>}
 
           </div>
 
@@ -769,6 +955,10 @@ export default function BulkProducts() {
       </div>
     </s-page>
   );
+}
+
+export default function DashboardPage() {
+  return <BulkProducts view="dashboard" />;
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
