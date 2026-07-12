@@ -499,7 +499,8 @@ export type BulkManagerView =
   | "create-products"
   | "bulk-delete-status"
   | "update-prices"
-  | "update-stock";
+  | "update-stock"
+  | "bulk-images";
 
 const viewContent: Record<
   Exclude<BulkManagerView, "dashboard">,
@@ -528,6 +529,12 @@ const viewContent: Record<
     title: "Update stock",
     description:
       "Export current inventory by SKU and barcode, enter new quantities, and synchronize the selected Shopify location.",
+  },
+  "bulk-images": {
+    eyebrow: "Media operations",
+    title: "Bulk image update",
+    description:
+      "Export existing listing images by barcode, add new image URLs in Excel, and attach them to matching Shopify products.",
   },
 };
 
@@ -567,6 +574,13 @@ function Dashboard({
       text: "Synchronize inventory quantities and product visibility at the correct location.",
       href: "/app/update-stock",
       tone: "amber",
+    },
+    {
+      number: "05",
+      title: "Bulk image update",
+      text: "Attach new listing images by barcode using exported current image columns.",
+      href: "/app/bulk-images",
+      tone: "blue",
     },
   ];
 
@@ -917,7 +931,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
               </fetcher.Form>
             </ToolCard>}
 
-            {view === "update-stock" && <ToolCard
+            {view === "bulk-images" && <ToolCard
               id="bulk-images"
               title="Bulk image update"
               badges={["barcode", "current images", "7 new images"]}
