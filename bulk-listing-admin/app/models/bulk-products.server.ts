@@ -83,7 +83,7 @@ export const BULK_DELETE_TEMPLATE_HEADERS = [
 
 export const IMAGE_TEMPLATE_HEADERS = [
   "Barcode",
-  ...Array.from({ length: 50 }, (_, index) => `Existing image ${index + 1}`),
+  ...Array.from({ length: 7 }, (_, index) => `Existing image ${index + 1}`),
   ...Array.from({ length: 7 }, (_, index) => `New image ${index + 1}`),
   "Product ID",
 ];
@@ -447,6 +447,7 @@ const IMAGE_TEMPLATE_QUERY = `#graphql
             media(first: 50) {
               edges {
                 node {
+                  id
                   ... on MediaImage {
                     image {
                       url
@@ -881,6 +882,105 @@ async function publishProductToPublications(
   }
 }
 
+async function getProductMediaIds(admin: GraphqlClient, productId: string) {
+  const mediaIds: string[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(
+      `#graphql
+        query BulkListingProductMediaIds($id: ID!, $cursor: String) {
+          product(id: $id) {
+            media(first: 250, after: $cursor) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              edges {
+                node {
+                  id
+                  __typename
+                }
+              }
+            }
+          }
+        }`,
+      { variables: { id: productId, cursor } },
+    );
+    const json = await response.json();
+
+    if (json.errors?.length) {
+      throw new Error(graphqlErrorMessage(json.errors));
+    }
+
+    const media = json.data?.product?.media;
+
+    mediaIds.push(
+      ...(media?.edges || [])
+        .map((edge: { node?: { id?: string; __typename?: string } }) =>
+          edge.node?.__typename === "MediaImage" ? edge.node.id || "" : "",
+        )
+        .filter(Boolean),
+    );
+    hasNextPage = Boolean(media?.pageInfo?.hasNextPage);
+    cursor = media?.pageInfo?.endCursor || null;
+  }
+
+  return mediaIds;
+}
+
+async function deleteProductMedia(
+  admin: GraphqlClient,
+  productId: string,
+  mediaIds: string[],
+) {
+  if (!mediaIds.length) {
+    return { deleted: 0 };
+  }
+
+  const deleted = [];
+  const errors = [];
+
+  for (const chunk of chunkArray(mediaIds, 250)) {
+    const response = await admin.graphql(
+      `#graphql
+        mutation BulkListingDeleteProductMedia($productId: ID!, $mediaIds: [ID!]!) {
+          productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+            deletedMediaIds
+            mediaUserErrors {
+              field
+              message
+            }
+          }
+        }`,
+      { variables: { productId, mediaIds: chunk } },
+    );
+    const json = await response.json();
+
+    if (json.errors?.length) {
+      errors.push(graphqlErrorMessage(json.errors));
+      continue;
+    }
+
+    const result = json.data?.productDeleteMedia;
+    const userErrors = result?.mediaUserErrors || [];
+
+    if (userErrors.length) {
+      errors.push(userErrors.map((error: any) => error.message).join("; "));
+      continue;
+    }
+
+    deleted.push(...(result?.deletedMediaIds || []));
+  }
+
+  if (errors.length) {
+    throw new Error(errors.join("; "));
+  }
+
+  return { deleted: deleted.length };
+}
+
 function barcodeSearchQuery(barcode: string) {
   return `barcode:"${barcode.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -1261,6 +1361,7 @@ export async function updateProductImages(
     }
 
     try {
+      const oldMediaIds = await getProductMediaIds(admin, row.productId);
       const response = await admin.graphql(mutation, {
         variables: {
           productId: row.productId,
@@ -1297,12 +1398,18 @@ export async function updateProductImages(
         continue;
       }
 
+      const deleteResult = await deleteProductMedia(
+        admin,
+        row.productId,
+        oldMediaIds,
+      );
+
       rowsResult.push({
         barcode: row.barcode,
         productId: row.productId,
         images: result?.media?.length || row.imageUrls.length,
         success: true,
-        message: "Images added.",
+        message: `Images replaced. Removed ${deleteResult.deleted} previous image(s).`,
       });
     } catch (error) {
       rowsResult.push({
