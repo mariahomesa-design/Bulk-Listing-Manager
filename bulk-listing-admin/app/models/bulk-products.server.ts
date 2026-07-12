@@ -10,6 +10,8 @@ type GraphqlClient = {
   ) => Promise<Response>;
 };
 
+const MAX_SYNC_ROWS = 1000;
+
 export type ProductRow = {
   title: string;
   descriptionHtml?: string;
@@ -139,6 +141,24 @@ function decimalStringValue(value: string) {
   }
 
   return normalized;
+}
+
+function errorMessage(error: unknown, fallback = "Bulk action failed.") {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function graphqlErrorMessage(errors: { message?: string }[] | undefined) {
+  return (errors || [])
+    .map((error) => error.message || "Shopify returned an error.")
+    .join("; ");
+}
+
+function ensureSyncRowLimit(rows: unknown[], action: string) {
+  if (rows.length > MAX_SYNC_ROWS) {
+    throw new Error(
+      `${action} currently supports ${MAX_SYNC_ROWS} rows per upload to prevent Shopify admin timeouts. Split this file into smaller Excel files, or we can add a background job queue for truly unlimited imports.`,
+    );
+  }
 }
 
 function statusValue(value: string): "ACTIVE" | "DRAFT" | "ARCHIVED" {
@@ -593,17 +613,23 @@ const STORE_COUNT_QUERY = `#graphql
 `;
 
 export async function getBulkManagerData(admin: GraphqlClient) {
-  const response = await admin.graphql(PRODUCT_LIST_QUERY);
-  const json = await response.json();
+  let json: any = {};
 
-  if (json.errors) {
-    const accessErrors = json.errors.filter((error: any) =>
-      String(error.message || "").includes("Access denied"),
-    );
+  try {
+    const response = await admin.graphql(PRODUCT_LIST_QUERY);
+    json = await response.json();
 
-    if (accessErrors.length !== json.errors.length) {
-      throw new Error(JSON.stringify(json.errors));
+    if (json.errors) {
+      const accessErrors = json.errors.filter((error: any) =>
+        String(error.message || "").includes("Access denied"),
+      );
+
+      if (accessErrors.length !== json.errors.length) {
+        json = {};
+      }
     }
+  } catch {
+    json = {};
   }
 
   let counts: { productCount?: number; collectionCount?: number } = {};
@@ -812,6 +838,8 @@ export async function createProducts(
   rows: ProductRow[],
   locationId: string,
 ) {
+  ensureSyncRowLimit(rows, "Create products");
+
   const created = [];
   const reportRows: CreateProductReportRow[] = [];
   const existingBarcodes = await getExistingBarcodes(admin, rows);
@@ -862,47 +890,70 @@ export async function createProducts(
       mediaContentType: "IMAGE",
       originalSource: url,
     }));
-    const response = await admin.graphql(
-      `#graphql
-        mutation BulkListingProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
-          productCreate(product: $product, media: $media) {
-            product {
-              id
-              title
-              status
-              variants(first: 1) {
-                edges {
-                  node {
-                    id
-                    inventoryItem {
+    let json: any;
+
+    try {
+      const response = await admin.graphql(
+        `#graphql
+          mutation BulkListingProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+            productCreate(product: $product, media: $media) {
+              product {
+                id
+                title
+                status
+                variants(first: 1) {
+                  edges {
+                    node {
                       id
+                      inventoryItem {
+                        id
+                      }
                     }
                   }
                 }
               }
+              userErrors {
+                field
+                message
+              }
             }
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-      {
-        variables: {
-          product: {
-            title: row.title,
-            descriptionHtml: row.descriptionHtml || undefined,
-            vendor: row.vendor || undefined,
-            category: row.category || undefined,
-            productType: row.productType || undefined,
-            status,
-            productOptions: productOptions.length ? productOptions : undefined,
+          }`,
+        {
+          variables: {
+            product: {
+              title: row.title,
+              descriptionHtml: row.descriptionHtml || undefined,
+              vendor: row.vendor || undefined,
+              category: row.category || undefined,
+              productType: row.productType || undefined,
+              status,
+              productOptions: productOptions.length ? productOptions : undefined,
+            },
+            media: media.length ? media : undefined,
           },
-          media: media.length ? media : undefined,
         },
-      },
-    );
-    const json = await response.json();
+      );
+      json = await response.json();
+    } catch (error) {
+      reportRows.push({
+        ...reportBase,
+        status: "Error",
+        message: errorMessage(error, "Product create request failed."),
+        productId: "",
+      });
+      continue;
+    }
+
+    if (json.errors?.length) {
+      reportRows.push({
+        ...reportBase,
+        status: "Error",
+        message: graphqlErrorMessage(json.errors),
+        productId: "",
+      });
+      continue;
+    }
+
     const errors = json.data?.productCreate?.userErrors || [];
 
     if (errors.length) {
@@ -916,7 +967,17 @@ export async function createProducts(
       continue;
     }
 
-    const product = json.data.productCreate.product;
+    const product = json.data?.productCreate?.product;
+
+    if (!product) {
+      reportRows.push({
+        ...reportBase,
+        status: "Error",
+        message: "Shopify did not return the created product.",
+        productId: "",
+      });
+      continue;
+    }
     const variant = product.variants.edges[0]?.node;
 
     try {
@@ -1132,6 +1193,8 @@ export async function applyProductActions(
   admin: GraphqlClient,
   rows: ProductActionRow[],
 ) {
+  ensureSyncRowLimit(rows, "Bulk delete / status");
+
   const statusGroups: Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]> = {
     ACTIVE: [],
     DRAFT: [],
@@ -1223,6 +1286,8 @@ export async function updateVariantPrices(
   admin: GraphqlClient,
   rows: VariantUpdateRow[],
 ) {
+  ensureSyncRowLimit(rows, "Update prices");
+
   if (!rows.length) {
     throw new Error("Add values in New price or New compare price before uploading.");
   }
@@ -1236,69 +1301,87 @@ export async function updateVariantPrices(
     {},
   );
   const updated = [];
+  const errors = [];
 
   for (const [productId, variants] of Object.entries(byProduct)) {
     for (const chunk of chunkArray(variants, 100)) {
-      const response = await admin.graphql(
-        `#graphql
-          mutation BulkListingVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-              productVariants {
-                id
+      try {
+        const response = await admin.graphql(
+          `#graphql
+            mutation BulkListingVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                productVariants {
+                  id
+                }
+                userErrors {
+                  field
+                  message
+                }
               }
-              userErrors {
-                field
-                message
-              }
-            }
-          }`,
-        {
-          variables: {
-            productId,
-            variants: chunk.map((variant) => {
-              const inventoryItem = compactObject({
-                sku: variant.sku,
-                cost: decimalStringValue(String(variant.cost || "")),
-                tracked: variant.tracked,
-              });
+            }`,
+          {
+            variables: {
+              productId,
+              variants: chunk.map((variant) => {
+                const inventoryItem = compactObject({
+                  sku: variant.sku,
+                  cost: decimalStringValue(String(variant.cost || "")),
+                  tracked: variant.tracked,
+                });
 
-              return compactObject({
-                id: variant.variantId,
-                price: decimalStringValue(String(variant.price || "")),
-                compareAtPrice: decimalStringValue(
-                  String(variant.compareAtPrice || ""),
-                ),
-                barcode: variant.barcode,
-                taxable: variant.taxable,
-                inventoryPolicy: variant.inventoryPolicy,
-                inventoryItem:
-                  Object.keys(inventoryItem).length > 0
-                    ? inventoryItem
-                    : undefined,
-              });
-            }),
+                return compactObject({
+                  id: variant.variantId,
+                  price: decimalStringValue(String(variant.price || "")),
+                  compareAtPrice: decimalStringValue(
+                    String(variant.compareAtPrice || ""),
+                  ),
+                  barcode: variant.barcode,
+                  taxable: variant.taxable,
+                  inventoryPolicy: variant.inventoryPolicy,
+                  inventoryItem:
+                    Object.keys(inventoryItem).length > 0
+                      ? inventoryItem
+                      : undefined,
+                });
+              }),
+            },
           },
-        },
-      );
-      const json = await response.json();
-
-      if (json.errors) {
-        throw new Error(JSON.stringify(json.errors));
-      }
-
-      const result = json.data?.productVariantsBulkUpdate;
-      const userErrors = result?.userErrors || [];
-
-      if (userErrors.length) {
-        throw new Error(
-          userErrors.map((error: any) => error.message).join("; "),
         );
-      }
 
-      updated.push({
-        productId,
-        updated: result?.productVariants?.length || chunk.length,
-      });
+        const json = await response.json();
+
+        if (json.errors?.length) {
+          errors.push({
+            productId,
+            variants: chunk.length,
+            message: graphqlErrorMessage(json.errors),
+          });
+          continue;
+        }
+
+        const result = json.data?.productVariantsBulkUpdate;
+        const userErrors = result?.userErrors || [];
+
+        if (userErrors.length) {
+          errors.push({
+            productId,
+            variants: chunk.length,
+            message: userErrors.map((error: any) => error.message).join("; "),
+          });
+          continue;
+        }
+
+        updated.push({
+          productId,
+          updated: result?.productVariants?.length || chunk.length,
+        });
+      } catch (error) {
+        errors.push({
+          productId,
+          variants: chunk.length,
+          message: errorMessage(error, "Price update failed."),
+        });
+      }
     }
   }
 
@@ -1306,8 +1389,10 @@ export async function updateVariantPrices(
     summary: {
       products: updated.length,
       variants: updated.reduce((count, row) => count + row.updated, 0),
+      errors: errors.length,
     },
     rows: updated,
+    errors,
   };
 }
 
@@ -1316,6 +1401,8 @@ export async function updateInventoryQuantities(
   rows: VariantUpdateRow[],
   locationId: string,
 ) {
+  ensureSyncRowLimit(rows, "Update stock");
+
   if (!locationId) {
     throw new Error("Choose an inventory location before updating stock.");
   }
@@ -1334,6 +1421,7 @@ export async function updateInventoryQuantities(
     }));
 
   const results = [];
+  const errors = [];
   const mutation = `#graphql
     mutation BulkListingInventory($input: InventorySetQuantitiesInput!) {
       inventorySetQuantities(input: $input) {
@@ -1355,40 +1443,62 @@ export async function updateInventoryQuantities(
     }`;
 
   for (const [index, quantityChunk] of chunkArray(quantities, 250).entries()) {
-    const response = await admin.graphql(mutation, {
-      variables: {
-        input: {
-          ignoreCompareQuantity: true,
-          name: "available",
-          reason: "correction",
-          referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}-${index + 1}`,
-          quantities: quantityChunk,
+    try {
+      const response = await admin.graphql(mutation, {
+        variables: {
+          input: {
+            ignoreCompareQuantity: true,
+            name: "available",
+            reason: "correction",
+            referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}-${index + 1}`,
+            quantities: quantityChunk,
+          },
         },
-      },
-    });
+      });
 
-    const json = await response.json();
+      const json = await response.json();
 
-    if (json.errors) {
-      throw new Error(JSON.stringify(json.errors));
+      if (json.errors?.length) {
+        errors.push({
+          batch: index + 1,
+          rows: quantityChunk.length,
+          message: graphqlErrorMessage(json.errors),
+        });
+        continue;
+      }
+
+      const result = json.data?.inventorySetQuantities;
+      const userErrors = result?.userErrors || [];
+
+      if (userErrors.length) {
+        errors.push({
+          batch: index + 1,
+          rows: quantityChunk.length,
+          message: userErrors.map((error: any) => error.message).join("; "),
+        });
+        continue;
+      }
+
+      results.push({
+        batch: index + 1,
+        rows: quantityChunk.length,
+        changedAt: result?.inventoryAdjustmentGroup?.createdAt || null,
+      });
+    } catch (error) {
+      errors.push({
+        batch: index + 1,
+        rows: quantityChunk.length,
+        message: errorMessage(error, "Stock update failed."),
+      });
     }
-
-    const result = json.data?.inventorySetQuantities;
-    const userErrors = result?.userErrors || [];
-
-    if (userErrors.length) {
-      throw new Error(
-        userErrors.map((error: any) => error.message).join("; "),
-      );
-    }
-
-    results.push(result);
   }
 
   return {
     batches: results.length,
     results,
+    errors,
     updatedRows: quantities.length,
+    failedRows: errors.reduce((count, error) => count + error.rows, 0),
   };
 }
 
