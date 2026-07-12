@@ -3,8 +3,10 @@ import { authenticate } from "../shopify.server";
 import {
   BULK_DELETE_TEMPLATE_HEADERS,
   getBulkDeleteTemplateRows,
+  getImageTemplateRows,
   getPriceTemplateRows,
   getStockTemplateRows,
+  IMAGE_TEMPLATE_HEADERS,
   PRICE_TEMPLATE_HEADERS,
   STOCK_TEMPLATE_HEADERS,
 } from "../models/bulk-products.server";
@@ -28,6 +30,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       ? await createStockTemplateWorkbook(request)
       : template === "update-prices"
         ? await createPriceTemplateWorkbook(request)
+      : template === "bulk-images"
+        ? await createImageTemplateWorkbook(request)
       : template === "bulk-delete"
         ? await createBulkDeleteTemplateWorkbook(request)
       : template === "create-products"
@@ -55,6 +59,19 @@ async function createStockTemplateWorkbook(request: Request) {
     dropdowns: {
       Status: ["Active", "Draft", "Unlist"],
     },
+  });
+}
+
+async function createImageTemplateWorkbook(request: Request) {
+  const { admin } = await authenticate.admin(request);
+
+  return createWorkbookWithDropdownsFromRows({
+    fileName: templateDefinitions["bulk-images"].fileName,
+    sheetName: templateDefinitions["bulk-images"].sheetName,
+    rows: await getImageTemplateRows(admin),
+    headers: IMAGE_TEMPLATE_HEADERS,
+    hiddenColumns: ["Product ID"],
+    dropdowns: {},
   });
 }
 

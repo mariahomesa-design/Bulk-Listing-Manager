@@ -14,12 +14,14 @@ import {
   applyProductActions,
   createProducts,
   getBulkManagerData,
+  normalizeImageRows,
   normalizeProductActionRows,
   normalizePriceRows,
   normalizeProductRows,
   normalizeStockRows,
   parseJsonRows,
   updateInventoryQuantities,
+  updateProductImages,
   updateProductStatuses,
   updateVariantPrices,
   type ProductActionRow,
@@ -160,6 +162,7 @@ function TemplateUpload({
   template:
     | "create-products"
     | "bulk-delete"
+    | "bulk-images"
     | "update-status"
     | "update-prices"
     | "update-stock"
@@ -382,6 +385,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return {
         intent,
         result: await applyProductActions(admin, rows),
+      };
+    }
+
+    if (intent === "bulk-images") {
+      const rows = normalizeImageRows(
+        await getRowsFromUpload<Record<string, unknown>>(
+          formData,
+          "imagesFile",
+          "productImages",
+        ),
+      );
+
+      return {
+        intent,
+        result: await updateProductImages(admin, rows),
       };
     }
 
@@ -893,6 +911,40 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                       disabled={isSubmitting}
                     >
                       Update stock
+                    </button>
+                  </div>
+                </div>
+              </fetcher.Form>
+            </ToolCard>}
+
+            {view === "update-stock" && <ToolCard
+              id="bulk-images"
+              title="Bulk image update"
+              badges={["barcode", "current images", "7 new images"]}
+            >
+              <fetcher.Form method="post" encType="multipart/form-data">
+                <input type="hidden" name="intent" value="bulk-images" />
+                <div className={styles.toolBody}>
+                  <TemplateUpload template="bulk-images" fileName="imagesFile" />
+                  <div className={styles.warning}>
+                    Add public image URLs in the New image columns. Shopify will
+                    attach those images to the matching product barcode.
+                  </div>
+                  <details className={styles.details}>
+                    <summary>JSON fallback</summary>
+                    <textarea
+                      className={styles.textarea}
+                      name="productImages"
+                      defaultValue="[]"
+                    />
+                  </details>
+                  <div className={styles.actions}>
+                    <button
+                      className={styles.primaryButton}
+                      type="submit"
+                      disabled={isSubmitting}
+                    >
+                      Update images
                     </button>
                   </div>
                 </div>

@@ -14,6 +14,7 @@ export const shopifyCategoryOptions =
 export type TemplateKey =
   | "create-products"
   | "bulk-delete"
+  | "bulk-images"
   | "update-prices"
   | "update-stock"
   | "add-to-collection"
@@ -69,6 +70,24 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
       {
         Barcode: "1234567890123",
         Action: "",
+        "Product ID": "gid://shopify/Product/1234567890",
+      },
+    ],
+  },
+  "bulk-images": {
+    fileName: "bulk-image-update-template.xlsx",
+    sheetName: "Bulk images",
+    rows: [
+      {
+        Barcode: "1234567890123",
+        "Existing image 1": "https://example.com/current-image.jpg",
+        "New image 1": "https://example.com/new-image-1.jpg",
+        "New image 2": "",
+        "New image 3": "",
+        "New image 4": "",
+        "New image 5": "",
+        "New image 6": "",
+        "New image 7": "",
         "Product ID": "gid://shopify/Product/1234567890",
       },
     ],

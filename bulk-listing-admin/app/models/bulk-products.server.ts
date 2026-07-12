@@ -67,11 +67,24 @@ export type ProductActionRow = {
   action?: "ACTIVE" | "DRAFT" | "ARCHIVED" | "DELETE";
 };
 
+export type ProductImageRow = {
+  barcode: string;
+  productId?: string;
+  imageUrls: string[];
+};
+
 export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
   "Current stock",
   "Current status",
   "Action",
+  "Product ID",
+];
+
+export const IMAGE_TEMPLATE_HEADERS = [
+  "Barcode",
+  ...Array.from({ length: 50 }, (_, index) => `Existing image ${index + 1}`),
+  ...Array.from({ length: 7 }, (_, index) => `New image ${index + 1}`),
   "Product ID",
 ];
 
@@ -345,6 +358,30 @@ export function normalizeProductActionRows(
     .filter((row) => row.productId && row.action);
 }
 
+export function normalizeImageRows(
+  rows: (ProductImageRow | Record<string, unknown>)[],
+): ProductImageRow[] {
+  return rows
+    .map((row) => {
+      const raw = row as Record<string, unknown>;
+
+      if (Array.isArray(raw.imageUrls)) {
+        return row as ProductImageRow;
+      }
+
+      const imageUrls = Array.from({ length: 7 }, (_, index) =>
+        rowValue(raw, [`New image ${index + 1}`, `Image Link ${index + 1}`]),
+      ).filter(Boolean);
+
+      return {
+        barcode: rowValue(raw, ["Barcode", "barcode"]),
+        productId: rowValue(raw, ["Product ID", "productId"]),
+        imageUrls,
+      };
+    })
+    .filter((row) => row.barcode && row.imageUrls.length > 0);
+}
+
 const STOCK_TEMPLATE_QUERY = `#graphql
   query BulkListingStockTemplate($cursor: String) {
     productVariants(first: 250, after: $cursor) {
@@ -394,6 +431,93 @@ const PRICE_TEMPLATE_QUERY = `#graphql
     }
   }
 `;
+
+const IMAGE_TEMPLATE_QUERY = `#graphql
+  query BulkListingImageTemplate($cursor: String) {
+    productVariants(first: 250, after: $cursor) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          barcode
+          product {
+            id
+            media(first: 50) {
+              edges {
+                node {
+                  ... on MediaImage {
+                    image {
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+export async function getImageTemplateRows(admin: GraphqlClient) {
+  const rows: Record<string, string>[] = [];
+  const seenProductBarcodes = new Set<string>();
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(IMAGE_TEMPLATE_QUERY, {
+      variables: { cursor },
+    });
+    const json = await response.json();
+
+    if (json.errors) {
+      throw new Error(JSON.stringify(json.errors));
+    }
+
+    const variants = json.data?.productVariants;
+
+    for (const edge of variants?.edges || []) {
+      const variant = edge.node;
+      const barcode = variant.barcode || "";
+      const productId = variant.product?.id || "";
+      const dedupeKey = `${productId}:${barcode}`;
+
+      if (!barcode || seenProductBarcodes.has(dedupeKey)) {
+        continue;
+      }
+
+      seenProductBarcodes.add(dedupeKey);
+
+      const imageUrls = (variant.product?.media?.edges || [])
+        .map((mediaEdge: any) => mediaEdge.node?.image?.url || "")
+        .filter(Boolean);
+      const row: Record<string, string> = {
+        Barcode: barcode,
+        "Product ID": productId,
+      };
+
+      IMAGE_TEMPLATE_HEADERS.forEach((header) => {
+        if (header.startsWith("Existing image ")) {
+          const index = Number(header.replace("Existing image ", "")) - 1;
+          row[header] = imageUrls[index] || "";
+        } else if (header.startsWith("New image ")) {
+          row[header] = "";
+        }
+      });
+
+      rows.push(row);
+    }
+
+    hasNextPage = Boolean(variants?.pageInfo?.hasNextPage);
+    cursor = variants?.pageInfo?.endCursor || null;
+  }
+
+  return rows;
+}
 
 export async function getPriceTemplateRows(admin: GraphqlClient) {
   const rows: Record<string, string>[] = [];
@@ -1067,6 +1191,140 @@ export async function createProducts(
       error: reportRows.filter((row) => row.status === "Error").length,
     },
     reportRows,
+  };
+}
+
+export async function updateProductImages(
+  admin: GraphqlClient,
+  rows: ProductImageRow[],
+) {
+  ensureSyncRowLimit(rows, "Bulk image update");
+
+  if (!rows.length) {
+    throw new Error("Add at least one URL in the New image columns before uploading.");
+  }
+
+  const grouped = new Map<string, ProductImageRow>();
+
+  for (const row of rows) {
+    let productId = row.productId;
+
+    if (!productId && row.barcode) {
+      const variant = await findExistingVariantByBarcode(admin, row.barcode);
+      productId = variant?.product?.id || "";
+    }
+
+    if (!productId) {
+      grouped.set(`missing:${row.barcode}`, {
+        ...row,
+        productId: "",
+      });
+      continue;
+    }
+
+    const existing = grouped.get(productId);
+
+    grouped.set(productId, {
+      barcode: existing?.barcode || row.barcode,
+      productId,
+      imageUrls: Array.from(
+        new Set([...(existing?.imageUrls || []), ...row.imageUrls]),
+      ),
+    });
+  }
+
+  const mutation = `#graphql
+    mutation BulkListingProductImages($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) {
+        media {
+          id
+          status
+        }
+        mediaUserErrors {
+          field
+          message
+        }
+      }
+    }`;
+  const rowsResult = [];
+
+  for (const row of grouped.values()) {
+    if (!row.productId) {
+      rowsResult.push({
+        barcode: row.barcode,
+        productId: "",
+        images: row.imageUrls.length,
+        success: false,
+        message: "Could not find a Shopify product for this barcode.",
+      });
+      continue;
+    }
+
+    try {
+      const response = await admin.graphql(mutation, {
+        variables: {
+          productId: row.productId,
+          media: row.imageUrls.map((url) => ({
+            mediaContentType: "IMAGE",
+            originalSource: url,
+          })),
+        },
+      });
+      const json = await response.json();
+
+      if (json.errors?.length) {
+        rowsResult.push({
+          barcode: row.barcode,
+          productId: row.productId,
+          images: row.imageUrls.length,
+          success: false,
+          message: graphqlErrorMessage(json.errors),
+        });
+        continue;
+      }
+
+      const result = json.data?.productCreateMedia;
+      const userErrors = result?.mediaUserErrors || [];
+
+      if (userErrors.length) {
+        rowsResult.push({
+          barcode: row.barcode,
+          productId: row.productId,
+          images: row.imageUrls.length,
+          success: false,
+          message: userErrors.map((error: any) => error.message).join("; "),
+        });
+        continue;
+      }
+
+      rowsResult.push({
+        barcode: row.barcode,
+        productId: row.productId,
+        images: result?.media?.length || row.imageUrls.length,
+        success: true,
+        message: "Images added.",
+      });
+    } catch (error) {
+      rowsResult.push({
+        barcode: row.barcode,
+        productId: row.productId,
+        images: row.imageUrls.length,
+        success: false,
+        message: errorMessage(error, "Image update failed."),
+      });
+    }
+  }
+
+  return {
+    summary: {
+      products: rowsResult.length,
+      success: rowsResult.filter((row) => row.success).length,
+      error: rowsResult.filter((row) => !row.success).length,
+      images: rowsResult
+        .filter((row) => row.success)
+        .reduce((count, row) => count + row.images, 0),
+    },
+    rows: rowsResult,
   };
 }
 
