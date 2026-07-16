@@ -10,8 +10,6 @@ type GraphqlClient = {
   ) => Promise<Response>;
 };
 
-const MAX_SYNC_ROWS = 1000;
-
 export type ProductRow = {
   title: string;
   descriptionHtml?: string;
@@ -164,14 +162,6 @@ function graphqlErrorMessage(errors: { message?: string }[] | undefined) {
   return (errors || [])
     .map((error) => error.message || "Shopify returned an error.")
     .join("; ");
-}
-
-function ensureSyncRowLimit(rows: unknown[], action: string) {
-  if (rows.length > MAX_SYNC_ROWS) {
-    throw new Error(
-      `${action} currently supports ${MAX_SYNC_ROWS} rows per upload to prevent Shopify admin timeouts. Split this file into smaller Excel files, or we can add a background job queue for truly unlimited imports.`,
-    );
-  }
 }
 
 function statusValue(value: string): "ACTIVE" | "DRAFT" | "ARCHIVED" {
@@ -1077,8 +1067,6 @@ export async function createProducts(
   rows: ProductRow[],
   locationId: string,
 ) {
-  ensureSyncRowLimit(rows, "Create products");
-
   const created = [];
   const reportRows: CreateProductReportRow[] = [];
   const existingBarcodes = await getExistingBarcodes(admin, rows);
@@ -1313,8 +1301,6 @@ export async function updateProductImages(
   admin: GraphqlClient,
   rows: ProductImageRow[],
 ) {
-  ensureSyncRowLimit(rows, "Bulk image update");
-
   if (!rows.length) {
     throw new Error("Add at least one URL in the New image columns before uploading.");
   }
@@ -1573,8 +1559,6 @@ export async function applyProductActions(
   admin: GraphqlClient,
   rows: ProductActionRow[],
 ) {
-  ensureSyncRowLimit(rows, "Bulk delete / status");
-
   const statusGroups: Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]> = {
     ACTIVE: [],
     DRAFT: [],
@@ -1666,8 +1650,6 @@ export async function updateVariantPrices(
   admin: GraphqlClient,
   rows: VariantUpdateRow[],
 ) {
-  ensureSyncRowLimit(rows, "Update prices");
-
   if (!rows.length) {
     throw new Error("Add values in New price or New compare price before uploading.");
   }
