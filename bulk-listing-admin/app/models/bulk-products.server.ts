@@ -1766,8 +1766,6 @@ export async function updateInventoryQuantities(
   rows: VariantUpdateRow[],
   locationId: string,
 ) {
-  ensureSyncRowLimit(rows, "Update stock");
-
   if (!locationId) {
     throw new Error("Choose an inventory location before updating stock.");
   }
