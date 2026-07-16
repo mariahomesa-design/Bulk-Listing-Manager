@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -9,10 +9,8 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
+import { createBulkJob } from "../models/bulk-jobs.server";
 import {
-  addProductsToCollection,
-  applyProductActions,
-  createProducts,
   getBulkManagerData,
   normalizeImageRows,
   normalizeProductActionRows,
@@ -20,11 +18,6 @@ import {
   normalizeProductRows,
   normalizeStockRows,
   parseJsonRows,
-  resolveStatusRowsProductIds,
-  updateInventoryQuantities,
-  updateProductImages,
-  updateProductStatuses,
-  updateVariantPrices,
   type ProductActionRow,
   type ProductRow,
   type VariantUpdateRow,
@@ -92,6 +85,21 @@ type UpdateHistoryFile = {
   status: "success" | "error";
   createdAt: string;
   rows: Record<string, unknown>[];
+};
+
+type BulkJobStatus = {
+  id: string;
+  intent: string;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  progress: number;
+  totalRows: number;
+  processedRows: number;
+  message?: string | null;
+  result?: unknown;
+  error?: string | null;
+  createdAt?: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
 };
 
 function escapeSpreadsheetXml(value: unknown) {
@@ -393,9 +401,30 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
+
+  async function enqueue(payload: Record<string, unknown>) {
+    const job = await createBulkJob({
+      shop: session.shop,
+      intent,
+      payload,
+    });
+
+    return {
+      intent,
+      job: {
+        id: job.id,
+        intent: job.intent,
+        status: job.status,
+        progress: job.progress,
+        totalRows: job.totalRows,
+        processedRows: job.processedRows,
+        message: job.message,
+      },
+    };
+  }
 
   try {
     if (intent === "create-products") {
@@ -406,14 +435,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           "products",
         ),
       );
-      return {
-        intent,
-        result: await createProducts(
-          admin,
-          rows,
-          String(formData.get("locationId") || ""),
-        ),
-      };
+
+      return enqueue({
+        rows,
+        locationId: String(formData.get("locationId") || ""),
+      });
     }
 
     if (intent === "update-status") {
@@ -444,27 +470,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           {},
         );
 
-        const result = [];
-
-        for (const [rowStatus, productIds] of Object.entries(statusGroups)) {
-          result.push(
-            await updateProductStatuses(
-              admin,
-              productIds,
-              rowStatus as "ACTIVE" | "DRAFT" | "ARCHIVED",
-            ),
-          );
-        }
-
-        return { intent, result };
+        return enqueue({
+          statusGroups,
+          rows: uploadedRows,
+        });
       }
 
       const productIds = parseJsonRows<string>(formData.get("productIds"));
 
-      return {
-        intent,
-        result: await updateProductStatuses(admin, productIds, status),
-      };
+      return enqueue({ productIds, status });
     }
 
     if (intent === "update-prices") {
@@ -475,10 +489,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           "variants",
         ),
       );
-      return {
-        intent,
-        result: await updateVariantPrices(admin, rows),
-      };
+      return enqueue({ rows });
     }
 
     if (intent === "bulk-delete") {
@@ -496,10 +507,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         );
       }
 
-      return {
-        intent,
-        result: await applyProductActions(admin, rows),
-      };
+      return enqueue({ rows });
     }
 
     if (intent === "bulk-images") {
@@ -511,10 +519,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
 
-      return {
-        intent,
-        result: await updateProductImages(admin, rows),
-      };
+      return enqueue({ rows });
     }
 
     if (intent === "update-stock") {
@@ -526,68 +531,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
       const locationId = String(formData.get("locationId") || "");
-      const stockRows = rows.filter(
-        (row) => row.inventoryItemId && row.quantity !== undefined,
-      );
-      const stockResult =
-        stockRows.length > 0
-          ? await updateInventoryQuantities(admin, stockRows, locationId)
-          : {
-              batches: 0,
-              results: [],
-              errors: [],
-              updatedRows: 0,
-              failedRows: 0,
-              skipped: "No New stock values were provided.",
-            };
-      const resolvedStatusRows = await resolveStatusRowsProductIds(admin, rows);
-      const statusGroups = resolvedStatusRows.reduce<
-        Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]>
-      >(
-        (groups, row) => {
-          if (row.productId && row.productStatus) {
-            groups[row.productStatus].push(row.productId);
-          }
 
-          return groups;
-        },
-        { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
-      );
-      const statusResult = [];
-      const missingStatusRows = resolvedStatusRows.filter(
-        (row) => row.productStatus && !row.productId,
-      );
-
-      for (const [status, productIds] of Object.entries(statusGroups)) {
-        const uniqueProductIds = Array.from(new Set(productIds));
-
-        if (uniqueProductIds.length > 0) {
-          statusResult.push(
-            await updateProductStatuses(
-              admin,
-              uniqueProductIds,
-              status as "ACTIVE" | "DRAFT" | "ARCHIVED",
-            ),
-          );
-        }
-      }
-
-      return {
-        intent,
-        result: {
-          stock: stockResult,
-          statuses: [
-            ...statusResult,
-            missingStatusRows.map((row) => ({
-              productId: "",
-              barcode: row.barcode || "",
-              action: row.productStatus,
-              success: false,
-              message: "Could not find a Shopify product for this barcode.",
-            })),
-          ].filter((group) => Array.isArray(group) && group.length > 0),
-        },
-      };
+      return enqueue({ rows, locationId });
     }
 
     if (intent === "add-to-collection") {
@@ -599,10 +544,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ? normalizeStringArrayRows(uploadedRows)
           : parseJsonRows<string>(formData.get("productIds"));
       const collectionId = String(formData.get("collectionId") || "");
-      return {
-        intent,
-        result: await addProductsToCollection(admin, collectionId, productIds),
-      };
+      return enqueue({ collectionId, productIds });
     }
 
     return { intent, error: "Unknown bulk action." };
@@ -839,6 +781,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
   const hasLocations = locations.length > 0;
   const historyKey = `mh-bulk-manager-history-${view}`;
   const [historyFiles, setHistoryFiles] = useState<UpdateHistoryFile[]>([]);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJob, setActiveJob] = useState<BulkJobStatus | null>(null);
+  const recordedJobIds = useRef(new Set<string>());
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -853,14 +798,75 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
   }, [historyKey]);
 
   useEffect(() => {
-    if (fetcher.data?.result) {
+    if (fetcher.data && "job" in fetcher.data && fetcher.data.job) {
+      setActiveJobId(fetcher.data.job.id);
+      setActiveJob(fetcher.data.job as BulkJobStatus);
+      shopify.toast.show("Bulk job started");
+      return;
+    }
+
+    if (fetcher.data && "result" in fetcher.data && fetcher.data.result) {
       shopify.toast.show("Bulk action completed");
     }
 
-    if (fetcher.data?.error) {
+    if (fetcher.data && "error" in fetcher.data && fetcher.data.error) {
       shopify.toast.show(fetcher.data.error, { isError: true });
     }
   }, [fetcher.data, shopify]);
+
+  useEffect(() => {
+    if (!activeJobId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadJob = async () => {
+      try {
+        const token = await (shopify as unknown as { idToken?: () => Promise<string> }).idToken?.();
+        const response = await fetch(`/app/jobs/${activeJobId}`, {
+          credentials: "include",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Job status failed (${response.status}).`);
+        }
+
+        const job = (await response.json()) as BulkJobStatus;
+
+        if (!cancelled) {
+          setActiveJob(job);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setActiveJob((current) =>
+            current
+              ? {
+                  ...current,
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : "Unable to load job status.",
+                }
+              : current,
+          );
+        }
+      }
+    };
+
+    loadJob();
+    const interval = window.setInterval(() => {
+      if (!["completed", "failed"].includes(activeJob?.status || "")) {
+        loadJob();
+      }
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeJobId, activeJob?.status, shopify]);
 
   useEffect(() => {
     if (!fetcher.data || fetcher.state !== "idle" || view === "dashboard") {
@@ -894,6 +900,61 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
       return next;
     });
   }, [fetcher.data, fetcher.state, historyKey, view]);
+
+  useEffect(() => {
+    if (
+      !activeJob ||
+      !["completed", "failed"].includes(activeJob.status) ||
+      recordedJobIds.current.has(activeJob.id) ||
+      view === "dashboard"
+    ) {
+      return;
+    }
+
+    const data = {
+      intent: activeJob.intent,
+      result: activeJob.result,
+      error: activeJob.error,
+    };
+    const rows = getResultRows(data);
+
+    if (!rows.length) {
+      return;
+    }
+
+    recordedJobIds.current.add(activeJob.id);
+
+    const file: UpdateHistoryFile = {
+      id: activeJob.id,
+      intent: activeJob.intent,
+      label: viewContent[view]?.title || activeJob.intent,
+      status: getResultStatus(rows, data),
+      createdAt: activeJob.completedAt || new Date().toISOString(),
+      rows,
+    };
+
+    setHistoryFiles((current) => {
+      const next = [file, ...current.filter((item) => item.id !== file.id)].slice(
+        0,
+        6,
+      );
+
+      try {
+        window.localStorage.setItem(historyKey, JSON.stringify(next));
+      } catch {
+        // Browser storage can be unavailable in private sessions.
+      }
+
+      return next;
+    });
+
+    shopify.toast.show(
+      activeJob.status === "completed"
+        ? "Bulk job completed"
+        : "Bulk job failed",
+      { isError: activeJob.status === "failed" },
+    );
+  }, [activeJob, historyKey, shopify, view]);
 
   if (view === "dashboard") {
     return (
@@ -1154,6 +1215,32 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
             <section className={styles.panel}>
               <div className={styles.panelHeader}>Update files</div>
               <div className={styles.panelBody}>
+                {activeJob && (
+                  <div className={styles.jobCard}>
+                    <div className={styles.jobHeader}>
+                      <div>
+                        <div className={styles.productTitle}>
+                          {viewContent[view]?.title || activeJob.intent}
+                        </div>
+                        <div className={styles.productMeta}>
+                          {activeJob.status} | {activeJob.message || "Working"}
+                        </div>
+                      </div>
+                      <strong>{Math.max(0, Math.min(100, activeJob.progress))}%</strong>
+                    </div>
+                    <div className={styles.progressTrack}>
+                      <span
+                        className={styles.progressBar}
+                        style={{
+                          width: `${Math.max(0, Math.min(100, activeJob.progress))}%`,
+                        }}
+                      />
+                    </div>
+                    <div className={styles.productMeta}>
+                      Rows: {activeJob.totalRows.toLocaleString()}
+                    </div>
+                  </div>
+                )}
                 {historyFiles.length === 0 && (
                   <div className={styles.emptyHistory}>
                     Result files will appear here after an upload finishes.

@@ -32,3 +32,24 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model BulkJob {
+  id          String    @id @default(cuid())
+  shop        String
+  intent      String
+  status      String    @default("queued")
+  progress    Int       @default(0)
+  totalRows   Int       @default(0)
+  processedRows Int     @default(0)
+  message     String?
+  payload     Json
+  result      Json?
+  error       String?
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([shop, createdAt])
+  @@index([status, createdAt])
+}
