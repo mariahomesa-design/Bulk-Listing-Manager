@@ -1,1 +1,0 @@
-import{w as t}from"./chunk-KS7C4IRE-C0Usnt22.js";import{j as e}from"./jsx-runtime-2blBVIOC.js";import{B as o}from"./app._index-CRWNa7nx.js";const p=t(function(){return e.jsx(o,{view:"bulk-delete-status"})});export{p as default};

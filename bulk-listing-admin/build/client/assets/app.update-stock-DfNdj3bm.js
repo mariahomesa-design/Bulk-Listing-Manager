@@ -1,0 +1,1 @@
+import{w as t}from"./chunk-KS7C4IRE-C0Usnt22.js";import{j as o}from"./jsx-runtime-2blBVIOC.js";import{B as p}from"./app._index-fSsPhCeV.js";const m=t(function(){return o.jsx(p,{view:"update-stock"})});export{m as default};

@@ -780,6 +780,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
   const isSubmitting = fetcher.state !== "idle";
   const hasLocations = locations.length > 0;
   const historyKey = `mh-bulk-manager-history-${view}`;
+  const activeJobKey = `mh-bulk-manager-active-job-${view}`;
   const [historyFiles, setHistoryFiles] = useState<UpdateHistoryFile[]>([]);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeJob, setActiveJob] = useState<BulkJobStatus | null>(null);
@@ -798,9 +799,31 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
   }, [historyKey]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || view === "dashboard") {
+      return;
+    }
+
+    try {
+      const savedJobId = window.localStorage.getItem(activeJobKey);
+
+      setActiveJobId(savedJobId || null);
+      setActiveJob(null);
+    } catch {
+      setActiveJobId(null);
+      setActiveJob(null);
+      // Browser storage can be unavailable in private sessions.
+    }
+  }, [activeJobKey, view]);
+
+  useEffect(() => {
     if (fetcher.data && "job" in fetcher.data && fetcher.data.job) {
       setActiveJobId(fetcher.data.job.id);
       setActiveJob(fetcher.data.job as BulkJobStatus);
+      try {
+        window.localStorage.setItem(activeJobKey, fetcher.data.job.id);
+      } catch {
+        // Browser storage can be unavailable in private sessions.
+      }
       shopify.toast.show("Bulk job started");
       return;
     }
@@ -812,7 +835,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
     if (fetcher.data && "error" in fetcher.data && fetcher.data.error) {
       shopify.toast.show(fetcher.data.error, { isError: true });
     }
-  }, [fetcher.data, shopify]);
+  }, [activeJobKey, fetcher.data, shopify]);
 
   useEffect(() => {
     if (!activeJobId) {
