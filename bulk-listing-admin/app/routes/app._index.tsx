@@ -20,6 +20,7 @@ import {
   normalizeProductRows,
   normalizeStockRows,
   parseJsonRows,
+  resolveStatusRowsProductIds,
   updateInventoryQuantities,
   updateProductImages,
   updateProductStatuses,
@@ -525,12 +526,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
       const locationId = String(formData.get("locationId") || "");
-      const stockResult = await updateInventoryQuantities(
-        admin,
-        rows,
-        locationId,
+      const stockRows = rows.filter(
+        (row) => row.inventoryItemId && row.quantity !== undefined,
       );
-      const statusGroups = rows.reduce<
+      const stockResult =
+        stockRows.length > 0
+          ? await updateInventoryQuantities(admin, stockRows, locationId)
+          : {
+              batches: 0,
+              results: [],
+              errors: [],
+              updatedRows: 0,
+              failedRows: 0,
+              skipped: "No New stock values were provided.",
+            };
+      const resolvedStatusRows = await resolveStatusRowsProductIds(admin, rows);
+      const statusGroups = resolvedStatusRows.reduce<
         Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]>
       >(
         (groups, row) => {
@@ -543,22 +554,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
       );
       const statusResult = [];
-      const totalStatusUpdates = Object.values(statusGroups).reduce(
-        (count, productIds) => count + new Set(productIds).size,
-        0,
+      const missingStatusRows = resolvedStatusRows.filter(
+        (row) => row.productStatus && !row.productId,
       );
-
-      if (totalStatusUpdates > 250) {
-        return {
-          intent,
-          result: {
-            stock: stockResult,
-            statuses: [],
-            statusWarning:
-              "Stock was updated. More than 250 status changes were selected, so status changes were skipped to avoid a timeout. Upload status changes in smaller files.",
-          },
-        };
-      }
 
       for (const [status, productIds] of Object.entries(statusGroups)) {
         const uniqueProductIds = Array.from(new Set(productIds));
@@ -578,7 +576,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         intent,
         result: {
           stock: stockResult,
-          statuses: statusResult,
+          statuses: [
+            ...statusResult,
+            missingStatusRows.map((row) => ({
+              productId: "",
+              barcode: row.barcode || "",
+              action: row.productStatus,
+              success: false,
+              message: "Could not find a Shopify product for this barcode.",
+            })),
+          ].filter((group) => Array.isArray(group) && group.length > 0),
         },
       };
     }

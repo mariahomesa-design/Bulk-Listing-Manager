@@ -62,6 +62,7 @@ export type VariantUpdateRow = {
 
 export type ProductActionRow = {
   productId: string;
+  barcode?: string;
   action?: "ACTIVE" | "DRAFT" | "ARCHIVED" | "DELETE";
 };
 
@@ -301,7 +302,11 @@ export function normalizeStockRows(
         productStatus: optionalStatusValue(rowValue(raw, ["Status", "status"])),
       };
     })
-    .filter((row) => row.inventoryItemId && row.quantity !== undefined);
+    .filter(
+      (row) =>
+        (row.inventoryItemId && row.quantity !== undefined) ||
+        Boolean(row.productStatus && (row.productId || row.barcode)),
+    );
 }
 
 export function normalizePriceRows(
@@ -342,10 +347,11 @@ export function normalizeProductActionRows(
 
       return {
         productId: rowValue(raw, ["Product ID", "productId"]),
+        barcode: rowValue(raw, ["Barcode", "barcode"]),
         action: productActionValue(rowValue(raw, ["Action", "Status", "status"])),
       };
     })
-    .filter((row) => row.productId && row.action);
+    .filter((row) => (row.productId || row.barcode) && row.action);
 }
 
 export function normalizeImageRows(
@@ -1021,6 +1027,61 @@ async function findExistingVariantByBarcode(
   return json.data?.productVariants?.edges?.[0]?.node;
 }
 
+async function resolveProductIdFromBarcode(
+  admin: GraphqlClient,
+  barcode: string | undefined,
+  cache: Map<string, string>,
+) {
+  const normalizedBarcode = barcode?.trim();
+
+  if (!normalizedBarcode) {
+    return "";
+  }
+
+  if (cache.has(normalizedBarcode)) {
+    return cache.get(normalizedBarcode) || "";
+  }
+
+  const variant = await findExistingVariantByBarcode(admin, normalizedBarcode);
+  const productId = variant?.product?.id || "";
+
+  cache.set(normalizedBarcode, productId);
+  return productId;
+}
+
+export async function resolveStatusRowsProductIds(
+  admin: GraphqlClient,
+  rows: VariantUpdateRow[],
+) {
+  const barcodeCache = new Map<string, string>();
+  const resolved = [];
+
+  for (const row of rows) {
+    if (!row.productStatus) {
+      continue;
+    }
+
+    const productId =
+      row.productId ||
+      (await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache));
+
+    if (!productId) {
+      resolved.push({
+        ...row,
+        productId: "",
+      });
+      continue;
+    }
+
+    resolved.push({
+      ...row,
+      productId,
+    });
+  }
+
+  return resolved;
+}
+
 async function getExistingBarcodes(
   admin: GraphqlClient,
   rows: ProductRow[],
@@ -1565,15 +1626,32 @@ export async function applyProductActions(
     ARCHIVED: [],
   };
   const deleteIds: string[] = [];
+  const missingRows = [];
+  const barcodeCache = new Map<string, string>();
 
   for (const row of rows) {
+    const productId =
+      row.productId ||
+      (await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache));
+
+    if (!productId) {
+      missingRows.push({
+        barcode: row.barcode || "",
+        productId: "",
+        action: row.action || "",
+        success: false,
+        message: "Could not find a Shopify product for this barcode.",
+      });
+      continue;
+    }
+
     if (row.action === "DELETE") {
-      deleteIds.push(row.productId);
+      deleteIds.push(productId);
       continue;
     }
 
     if (row.action) {
-      statusGroups[row.action].push(row.productId);
+      statusGroups[row.action].push(productId);
     }
   }
 
@@ -1595,7 +1673,7 @@ export async function applyProductActions(
 
   const deleted = await deleteProducts(admin, Array.from(new Set(deleteIds)));
   const statusRows = statuses.flat();
-  const allRows = [...statusRows, ...deleted];
+  const allRows = [...statusRows, ...deleted, ...missingRows];
 
   return {
     summary: {
