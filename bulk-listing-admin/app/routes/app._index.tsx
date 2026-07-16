@@ -84,6 +84,15 @@ type CreateProductReportRow = {
   productId: string;
 };
 
+type UpdateHistoryFile = {
+  id: string;
+  intent: string;
+  label: string;
+  status: "success" | "error";
+  createdAt: string;
+  rows: Record<string, unknown>[];
+};
+
 function escapeSpreadsheetXml(value: unknown) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -92,18 +101,125 @@ function escapeSpreadsheetXml(value: unknown) {
     .replace(/"/g, "&quot;");
 }
 
-function downloadCreateProductsReport(rows: CreateProductReportRow[]) {
-  const headers = ["Row", "Title", "SKU", "Barcode", "Status", "Message", "Product ID"];
-  const sheetRows = rows.map((row) => [
-    row.row,
-    row.title,
-    row.sku,
-    row.barcode,
-    row.status,
-    row.message,
-    row.productId,
-  ]);
-  const xmlRows = [headers, ...sheetRows]
+function getResultRows(data: any): Record<string, unknown>[] {
+  if (!data) {
+    return [];
+  }
+
+  if (data.error) {
+    return [
+      {
+        Intent: data.intent || "bulk-action",
+        Status: "Error",
+        Message: data.error,
+      },
+    ];
+  }
+
+  const result = data.result;
+
+  if (!result) {
+    return [];
+  }
+
+  if (Array.isArray(result.reportRows)) {
+    return result.reportRows.map((row: CreateProductReportRow) => ({
+      Row: row.row,
+      Title: row.title,
+      SKU: row.sku,
+      Barcode: row.barcode,
+      Status: row.status,
+      Message: row.message,
+      "Product ID": row.productId,
+    }));
+  }
+
+  if (Array.isArray(result.rows)) {
+    return result.rows.map((row: Record<string, unknown>) => row);
+  }
+
+  if (Array.isArray(result.errors) && result.errors.length > 0) {
+    return result.errors.map((row: Record<string, unknown>) => ({
+      Status: "Error",
+      ...row,
+    }));
+  }
+
+  if (result.stock || result.statuses) {
+    const rows: Record<string, unknown>[] = [];
+
+    if (result.stock) {
+      rows.push({
+        Operation: "Stock",
+        Status: result.stock.errors?.length ? "Completed with errors" : "Success",
+        "Updated rows": result.stock.updatedRows ?? "",
+        "Failed rows": result.stock.failedRows ?? 0,
+        Batches: result.stock.batches ?? "",
+      });
+      (result.stock.errors || []).forEach((error: Record<string, unknown>) =>
+        rows.push({ Operation: "Stock", Status: "Error", ...error }),
+      );
+    }
+
+    (result.statuses || [])
+      .flat()
+      .forEach((row: Record<string, unknown>) =>
+        rows.push({ Operation: "Status", ...row }),
+      );
+
+    if (result.statusWarning) {
+      rows.push({
+        Operation: "Status",
+        Status: "Warning",
+        Message: result.statusWarning,
+      });
+    }
+
+    return rows;
+  }
+
+  if (Array.isArray(result)) {
+    return result.flat().map((row: Record<string, unknown>) => row);
+  }
+
+  if (result.summary) {
+    return [result.summary];
+  }
+
+  return [{ Result: JSON.stringify(result) }];
+}
+
+function getResultStatus(rows: Record<string, unknown>[], data: any) {
+  if (data?.error) {
+    return "error";
+  }
+
+  return rows.some((row) => {
+    const values = Object.values(row).map((value) => String(value).toLowerCase());
+    return values.includes("error") || values.includes("false");
+  })
+    ? "error"
+    : "success";
+}
+
+function resultFileName(file: UpdateHistoryFile) {
+  return `${file.intent}-${file.status}-${file.createdAt
+    .slice(0, 19)
+    .replace(/[:T]/g, "-")}.xls`;
+}
+
+function downloadResultFile(file: UpdateHistoryFile) {
+  const headers = Array.from(
+    file.rows.reduce((keys, row) => {
+      Object.keys(row).forEach((key) => keys.add(key));
+      return keys;
+    }, new Set<string>()),
+  );
+  const normalizedHeaders = headers.length ? headers : ["Status", "Message"];
+  const sheetRows = file.rows.map((row) =>
+    normalizedHeaders.map((header) => row[header] ?? ""),
+  );
+  const xmlRows = [normalizedHeaders, ...sheetRows]
     .map(
       (cells) =>
         `<Row>${cells
@@ -120,7 +236,7 @@ function downloadCreateProductsReport(rows: CreateProductReportRow[]) {
  xmlns:o="urn:schemas-microsoft-com:office:office"
  xmlns:x="urn:schemas-microsoft-com:office:excel"
  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Worksheet ss:Name="Create products result">
+ <Worksheet ss:Name="Result">
   <Table>${xmlRows}</Table>
  </Worksheet>
 </Workbook>`;
@@ -131,10 +247,7 @@ function downloadCreateProductsReport(rows: CreateProductReportRow[]) {
   const link = document.createElement("a");
 
   link.href = url;
-  link.download = `create-products-result-${new Date()
-    .toISOString()
-    .slice(0, 19)
-    .replace(/[:T]/g, "-")}.xls`;
+  link.download = resultFileName(file);
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -717,12 +830,20 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
   const shopify = useAppBridge();
   const isSubmitting = fetcher.state !== "idle";
   const hasLocations = locations.length > 0;
-  const createProductReportRows =
-    fetcher.data?.intent === "create-products" &&
-    fetcher.data?.result &&
-    "reportRows" in fetcher.data.result
-      ? (fetcher.data.result.reportRows as CreateProductReportRow[])
-      : [];
+  const historyKey = `mh-bulk-manager-history-${view}`;
+  const [historyFiles, setHistoryFiles] = useState<UpdateHistoryFile[]>([]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      setHistoryFiles(JSON.parse(window.localStorage.getItem(historyKey) || "[]"));
+    } catch {
+      setHistoryFiles([]);
+    }
+  }, [historyKey]);
 
   useEffect(() => {
     if (fetcher.data?.result) {
@@ -733,6 +854,39 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
       shopify.toast.show(fetcher.data.error, { isError: true });
     }
   }, [fetcher.data, shopify]);
+
+  useEffect(() => {
+    if (!fetcher.data || fetcher.state !== "idle" || view === "dashboard") {
+      return;
+    }
+
+    const rows = getResultRows(fetcher.data);
+
+    if (!rows.length) {
+      return;
+    }
+
+    const file: UpdateHistoryFile = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      intent: String(fetcher.data.intent || view),
+      label: viewContent[view]?.title || String(fetcher.data.intent || "Bulk action"),
+      status: getResultStatus(rows, fetcher.data),
+      createdAt: new Date().toISOString(),
+      rows,
+    };
+
+    setHistoryFiles((current) => {
+      const next = [file, ...current].slice(0, 6);
+
+      try {
+        window.localStorage.setItem(historyKey, JSON.stringify(next));
+      } catch {
+        // Browser storage can be unavailable in private sessions.
+      }
+
+      return next;
+    });
+  }, [fetcher.data, fetcher.state, historyKey, view]);
 
   if (view === "dashboard") {
     return (
@@ -991,53 +1145,45 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
 
           <aside className={styles.sidePanel}>
             <section className={styles.panel}>
-              <div className={styles.panelHeader}>Recent listings</div>
+              <div className={styles.panelHeader}>Update files</div>
               <div className={styles.panelBody}>
-                {products.slice(0, 8).map((product: any) => (
-                  <div className={styles.productRow} key={product.id}>
+                {historyFiles.length === 0 && (
+                  <div className={styles.emptyHistory}>
+                    Result files will appear here after an upload finishes.
+                  </div>
+                )}
+                {historyFiles.map((file) => (
+                  <div className={styles.historyRow} key={file.id}>
                     <div>
-                      <div className={styles.productTitle}>{product.title}</div>
+                      <div className={styles.productTitle}>{file.label}</div>
                       <div className={styles.productMeta}>
-                        {product.status} | Stock {product.totalInventory ?? 0}
+                        {file.status === "success" ? "Successful file" : "Error file"} |{" "}
+                        {new Date(file.createdAt).toLocaleString()}
                       </div>
                     </div>
                     <button
                       className={styles.editButton}
                       type="button"
-                      onClick={() => {
-                        shopify.intents.invoke?.("edit:shopify/Product", {
-                          value: product.id,
-                        });
-                      }}
+                      onClick={() => downloadResultFile(file)}
                     >
-                      Edit
+                      Download
                     </button>
                   </div>
                 ))}
+                {historyFiles.length > 0 && (
+                  <button
+                    className={styles.secondaryButton}
+                    type="button"
+                    onClick={() => {
+                      setHistoryFiles([]);
+                      window.localStorage.removeItem(historyKey);
+                    }}
+                  >
+                    Clear history
+                  </button>
+                )}
               </div>
             </section>
-
-            {fetcher.data && (
-              <section className={styles.panel}>
-                <div className={styles.panelHeader}>Last action result</div>
-                <div className={styles.panelBody}>
-                  {createProductReportRows.length > 0 && (
-                    <button
-                      className={styles.secondaryButton}
-                      type="button"
-                      onClick={() =>
-                        downloadCreateProductsReport(createProductReportRows)
-                      }
-                    >
-                      Download result Excel
-                    </button>
-                  )}
-                  <pre className={styles.result}>
-                    <code>{JSON.stringify(fetcher.data, null, 2)}</code>
-                  </pre>
-                </div>
-              </section>
-            )}
           </aside>
         </div>
       </div>
