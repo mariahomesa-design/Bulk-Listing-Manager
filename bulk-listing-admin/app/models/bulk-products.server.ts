@@ -731,6 +731,12 @@ const STORE_COUNT_QUERY = `#graphql
     productsCount {
       count
     }
+    activeProductsCount: productsCount(query: "status:active") {
+      count
+    }
+    draftProductsCount: productsCount(query: "status:draft") {
+      count
+    }
     collectionsCount {
       count
     }
@@ -757,7 +763,12 @@ export async function getBulkManagerData(admin: GraphqlClient) {
     json = {};
   }
 
-  let counts: { productCount?: number; collectionCount?: number } = {};
+  let counts: {
+    productCount?: number;
+    activeProductCount?: number;
+    draftProductCount?: number;
+    collectionCount?: number;
+  } = {};
 
   try {
     const countResponse = await admin.graphql(STORE_COUNT_QUERY);
@@ -766,6 +777,8 @@ export async function getBulkManagerData(admin: GraphqlClient) {
     if (!countJson.errors?.length) {
       counts = {
         productCount: countJson.data?.productsCount?.count,
+        activeProductCount: countJson.data?.activeProductsCount?.count,
+        draftProductCount: countJson.data?.draftProductsCount?.count,
         collectionCount: countJson.data?.collectionsCount?.count,
       };
     }
@@ -776,6 +789,8 @@ export async function getBulkManagerData(admin: GraphqlClient) {
   return {
     products: json.data?.products?.edges.map((edge: any) => edge.node) || [],
     productCount: counts.productCount,
+    activeProductCount: counts.activeProductCount,
+    draftProductCount: counts.draftProductCount,
     collections:
       json.data?.collections?.edges.map((edge: any) => edge.node) || [],
     collectionCount: counts.collectionCount,

@@ -541,6 +541,8 @@ const viewContent: Record<
 function Dashboard({
   products,
   productCount,
+  activeProductCount,
+  draftProductCount,
   collections,
   collectionCount,
   locations,
@@ -605,6 +607,16 @@ function Dashboard({
           <span className={styles.metricCaption}>Products</span>
           <strong>{(productCount ?? products.length).toLocaleString()}</strong>
           <span>Live catalog count</span>
+        </div>
+        <div className={styles.metricCard}>
+          <span className={styles.metricCaption}>Active</span>
+          <strong>{(activeProductCount ?? 0).toLocaleString()}</strong>
+          <span>Visible listings</span>
+        </div>
+        <div className={styles.metricCard}>
+          <span className={styles.metricCaption}>Draft</span>
+          <strong>{(draftProductCount ?? 0).toLocaleString()}</strong>
+          <span>Hidden drafts</span>
         </div>
         <div className={styles.metricCard}>
           <span className={styles.metricCaption}>Collections</span>
@@ -691,7 +703,15 @@ function Dashboard({
 }
 
 export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView }) {
-  const { products, productCount, collections, collectionCount, locations } =
+  const {
+    products,
+    productCount,
+    activeProductCount,
+    draftProductCount,
+    collections,
+    collectionCount,
+    locations,
+  } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
@@ -721,6 +741,8 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
           <Dashboard
             products={products}
             productCount={productCount}
+            activeProductCount={activeProductCount}
+            draftProductCount={draftProductCount}
             collections={collections}
             collectionCount={collectionCount}
             locations={locations}
