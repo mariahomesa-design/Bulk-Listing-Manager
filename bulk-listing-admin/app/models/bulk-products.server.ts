@@ -75,9 +75,11 @@ export type ProductImageRow = {
 export type VariationRow = {
   parentSku: string;
   barcode: string;
+  color?: string;
+  size?: string;
 };
 
-export const VARIATION_TEMPLATE_HEADERS = ["Parent SKU", "Barcode"];
+export const VARIATION_TEMPLATE_HEADERS = ["Parent SKU", "Barcode", "Color", "Size"];
 
 export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
@@ -399,6 +401,8 @@ export function normalizeVariationRows(
       return {
         parentSku: rowValue(raw, ["Parent SKU", "Parent Sku", "parentSku"]),
         barcode: rowValue(raw, ["Barcode", "barcode"]),
+        color: rowValue(raw, ["Color", "color"]),
+        size: rowValue(raw, ["Size", "size"]),
       };
     })
     .filter((row) => row.parentSku && row.barcode);
@@ -1087,18 +1091,70 @@ function groupVariationRows(rows: VariationRow[]) {
   }, {});
 }
 
+type VariationSource = {
+  row: VariationRow;
+  variant: any;
+};
+
+function variationOptionNames(sources: VariationSource[]) {
+  const hasColor = sources.some((source) => Boolean(source.row.color));
+  const hasSize = sources.some((source) => Boolean(source.row.size));
+  const optionNames = [
+    ...(hasColor ? ["Color"] : []),
+    ...(hasSize ? ["Size"] : []),
+  ];
+
+  if (!optionNames.length) {
+    optionNames.push("Barcode");
+  }
+
+  return optionNames;
+}
+
+function variationOptionValues(source: VariationSource, optionNames: string[]) {
+  return optionNames.map((optionName) => {
+    if (optionName === "Color") {
+      return {
+        name: source.row.color || source.row.barcode,
+        optionName,
+      };
+    }
+
+    if (optionName === "Size") {
+      return {
+        name: source.row.size || source.row.barcode,
+        optionName,
+      };
+    }
+
+    return {
+      name: source.row.barcode,
+      optionName,
+    };
+  });
+}
+
+function variationReportFields(parentSku: string, barcode: string, rows: VariationRow[]) {
+  const row = rows.find((variationRow) => variationRow.barcode.trim() === barcode);
+
+  return {
+    parentSku,
+    barcode,
+    color: row?.color || "",
+    size: row?.size || "",
+  };
+}
+
 async function createVariationProduct(
   admin: GraphqlClient,
   parentSku: string,
-  sourceVariants: any[],
+  sources: VariationSource[],
 ) {
-  const firstVariant = sourceVariants[0];
+  const firstVariant = sources[0]?.variant;
   const firstProduct = firstVariant?.product || {};
-  const optionValues = sourceVariants.map((variant) => ({
-    name: String(variant.barcode || ""),
-  }));
-  const mediaSrc = sourceVariants
-    .map((variant) => variant.product?.featuredMedia?.preview?.image?.url || "")
+  const optionNames = variationOptionNames(sources);
+  const mediaSrc = sources
+    .map((source) => source.variant.product?.featuredMedia?.preview?.image?.url || "")
     .filter(Boolean);
   const productResponse = await admin.graphql(
     `#graphql
@@ -1123,12 +1179,24 @@ async function createVariationProduct(
           productType: firstProduct.productType || undefined,
           category: firstProduct.category?.id || undefined,
           status: "DRAFT",
-          productOptions: [
-            {
-              name: "Barcode",
-              values: optionValues,
-            },
-          ],
+          productOptions: optionNames.map((optionName) => {
+            const values = sources.map((source) => {
+              if (optionName === "Color") {
+                return source.row.color || source.row.barcode;
+              }
+
+              if (optionName === "Size") {
+                return source.row.size || source.row.barcode;
+              }
+
+              return source.row.barcode;
+            });
+
+            return {
+              name: optionName,
+              values: Array.from(new Set(values)).map((name) => ({ name })),
+            };
+          }),
         },
         media: mediaSrc.length
           ? Array.from(new Set(mediaSrc)).map((url) => ({
@@ -1158,7 +1226,8 @@ async function createVariationProduct(
     throw new Error("Shopify did not return a parent variation product.");
   }
 
-  const variants = sourceVariants.map((variant) => {
+  const variants = sources.map((source) => {
+    const variant = source.variant;
     const inventoryItem = compactObject({
       sku: variant.sku || `${parentSku}-${variant.barcode}`,
       cost: decimalStringValue(String(variant.inventoryItem?.unitCost?.amount || "")),
@@ -1173,12 +1242,7 @@ async function createVariationProduct(
       inventoryPolicy: variant.inventoryPolicy,
       inventoryItem:
         Object.keys(inventoryItem).length > 0 ? inventoryItem : undefined,
-      optionValues: [
-        {
-          name: String(variant.barcode || ""),
-          optionName: "Barcode",
-        },
-      ],
+      optionValues: variationOptionValues(source, optionNames),
       mediaSrc: variant.product?.featuredMedia?.preview?.image?.url
         ? [variant.product.featuredMedia.preview.image.url]
         : undefined,
@@ -1250,8 +1314,7 @@ export async function createBulkVariations(
 
     if (uniqueBarcodes.length < 2) {
       reportRows.push({
-        parentSku,
-        barcode: uniqueBarcodes[0] || "",
+        ...variationReportFields(parentSku, uniqueBarcodes[0] || "", groupRows),
         status: "Error",
         message: "At least 2 barcodes are required to create variations.",
         productId: "",
@@ -1262,8 +1325,7 @@ export async function createBulkVariations(
     if (uniqueBarcodes.length > 20) {
       uniqueBarcodes.forEach((barcode) =>
         reportRows.push({
-          parentSku,
-          barcode,
+          ...variationReportFields(parentSku, barcode, groupRows),
           status: "Error",
           message: "A parent SKU can contain maximum 20 barcodes.",
           productId: "",
@@ -1276,20 +1338,20 @@ export async function createBulkVariations(
     const missingBarcodes = [];
 
     for (const barcode of uniqueBarcodes) {
+      const row = groupRows.find((variationRow) => variationRow.barcode.trim() === barcode);
       const variant = await findExistingVariantByBarcode(admin, barcode);
 
       if (!variant?.id) {
         missingBarcodes.push(barcode);
-      } else {
-        sourceVariants.push(variant);
+      } else if (row) {
+        sourceVariants.push({ row, variant });
       }
     }
 
     if (missingBarcodes.length) {
       missingBarcodes.forEach((barcode) =>
         reportRows.push({
-          parentSku,
-          barcode,
+          ...variationReportFields(parentSku, barcode, groupRows),
           status: "Error",
           message: "Could not find an existing Shopify variant for this barcode.",
           productId: "",
@@ -1303,8 +1365,7 @@ export async function createBulkVariations(
 
       uniqueBarcodes.forEach((barcode) =>
         reportRows.push({
-          parentSku,
-          barcode,
+          ...variationReportFields(parentSku, barcode, groupRows),
           status: "Success",
           message: `Created under parent SKU ${parentSku}. Original listing was not deleted.`,
           productId: result.productId,
@@ -1313,8 +1374,7 @@ export async function createBulkVariations(
     } catch (error) {
       uniqueBarcodes.forEach((barcode) =>
         reportRows.push({
-          parentSku,
-          barcode,
+          ...variationReportFields(parentSku, barcode, groupRows),
           status: "Error",
           message: errorMessage(error, "Variation product create failed."),
           productId: "",

@@ -1,0 +1,1 @@
+import{w as t}from"./chunk-KS7C4IRE-C0Usnt22.js";import{j as r}from"./jsx-runtime-2blBVIOC.js";import{B as o}from"./app._index-D6EBixO7.js";const i=t(function(){return r.jsx(o,{view:"update-prices"})});export{i as default};

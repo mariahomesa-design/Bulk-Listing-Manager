@@ -100,10 +100,14 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
       {
         "Parent SKU": "ZH-808",
         Barcode: "30801011",
+        Color: "Black",
+        Size: "Small",
       },
       {
         "Parent SKU": "ZH-808",
         Barcode: "30801012",
+        Color: "White",
+        Size: "Medium",
       },
     ],
   },
