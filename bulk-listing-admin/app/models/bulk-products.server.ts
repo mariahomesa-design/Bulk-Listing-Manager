@@ -75,11 +75,20 @@ export type ProductImageRow = {
 export type VariationRow = {
   parentSku: string;
   barcode: string;
-  color?: string;
-  size?: string;
+  option1Name?: string;
+  option1Value?: string;
+  option2Name?: string;
+  option2Value?: string;
 };
 
-export const VARIATION_TEMPLATE_HEADERS = ["Parent SKU", "Barcode", "Color", "Size"];
+export const VARIATION_TEMPLATE_HEADERS = [
+  "Parent SKU",
+  "Barcode",
+  "Option 1 Name",
+  "Option 1 Value",
+  "Option 2 Name",
+  "Option 2 Value",
+];
 
 export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
@@ -394,15 +403,21 @@ export function normalizeVariationRows(
     .map((row) => {
       const raw = row as Record<string, unknown>;
 
-      if (raw.parentSku && raw.barcode) {
-        return row as VariationRow;
-      }
-
       return {
         parentSku: rowValue(raw, ["Parent SKU", "Parent Sku", "parentSku"]),
         barcode: rowValue(raw, ["Barcode", "barcode"]),
-        color: rowValue(raw, ["Color", "color"]),
-        size: rowValue(raw, ["Size", "size"]),
+        option1Name:
+          rowValue(raw, ["Option 1 Name", "Option1 Name", "option1Name"]) ||
+          (rowValue(raw, ["Color", "color"]) ? "Color" : ""),
+        option1Value:
+          rowValue(raw, ["Option 1 Value", "Option1 Value", "option1Value"]) ||
+          rowValue(raw, ["Color", "color"]),
+        option2Name:
+          rowValue(raw, ["Option 2 Name", "Option2 Name", "option2Name"]) ||
+          (rowValue(raw, ["Size", "size"]) ? "Size" : ""),
+        option2Value:
+          rowValue(raw, ["Option 2 Value", "Option2 Value", "option2Value"]) ||
+          rowValue(raw, ["Size", "size"]),
       };
     })
     .filter((row) => row.parentSku && row.barcode);
@@ -1096,13 +1111,27 @@ type VariationSource = {
   variant: any;
 };
 
+function normalizedVariationOptions(row: VariationRow) {
+  return [
+    {
+      name: row.option1Name || "",
+      value: row.option1Value || "",
+    },
+    {
+      name: row.option2Name || "",
+      value: row.option2Value || "",
+    },
+  ].filter((option) => option.name && option.value);
+}
+
 function variationOptionNames(sources: VariationSource[]) {
-  const hasColor = sources.some((source) => Boolean(source.row.color));
-  const hasSize = sources.some((source) => Boolean(source.row.size));
-  const optionNames = [
-    ...(hasColor ? ["Color"] : []),
-    ...(hasSize ? ["Size"] : []),
-  ];
+  const optionNames = Array.from(
+    new Set(
+      sources.flatMap((source) =>
+        normalizedVariationOptions(source.row).map((option) => option.name),
+      ),
+    ),
+  );
 
   if (!optionNames.length) {
     optionNames.push("Barcode");
@@ -1112,23 +1141,13 @@ function variationOptionNames(sources: VariationSource[]) {
 }
 
 function variationOptionValues(source: VariationSource, optionNames: string[]) {
-  return optionNames.map((optionName) => {
-    if (optionName === "Color") {
-      return {
-        name: source.row.color || source.row.barcode,
-        optionName,
-      };
-    }
+  const rowOptions = normalizedVariationOptions(source.row);
 
-    if (optionName === "Size") {
-      return {
-        name: source.row.size || source.row.barcode,
-        optionName,
-      };
-    }
+  return optionNames.map((optionName) => {
+    const option = rowOptions.find((rowOption) => rowOption.name === optionName);
 
     return {
-      name: source.row.barcode,
+      name: option?.value || source.row.barcode,
       optionName,
     };
   });
@@ -1140,8 +1159,10 @@ function variationReportFields(parentSku: string, barcode: string, rows: Variati
   return {
     parentSku,
     barcode,
-    color: row?.color || "",
-    size: row?.size || "",
+    option1Name: row?.option1Name || "",
+    option1Value: row?.option1Value || "",
+    option2Name: row?.option2Name || "",
+    option2Value: row?.option2Value || "",
   };
 }
 
@@ -1181,15 +1202,11 @@ async function createVariationProduct(
           status: "DRAFT",
           productOptions: optionNames.map((optionName) => {
             const values = sources.map((source) => {
-              if (optionName === "Color") {
-                return source.row.color || source.row.barcode;
-              }
+              const option = normalizedVariationOptions(source.row).find(
+                (rowOption) => rowOption.name === optionName,
+              );
 
-              if (optionName === "Size") {
-                return source.row.size || source.row.barcode;
-              }
-
-              return source.row.barcode;
+              return option?.value || source.row.barcode;
             });
 
             return {

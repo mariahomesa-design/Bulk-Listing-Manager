@@ -112,7 +112,10 @@ function createVariationTemplateWorkbook() {
     sheetName: templateDefinitions["bulk-variations"].sheetName,
     rows: templateDefinitions["bulk-variations"].rows,
     headers: VARIATION_TEMPLATE_HEADERS,
-    dropdowns: {},
+    dropdowns: {
+      "Option 1 Name": ["Color", "Size", "Set"],
+      "Option 2 Name": ["Color", "Size", "Set"],
+    },
   });
 }
 

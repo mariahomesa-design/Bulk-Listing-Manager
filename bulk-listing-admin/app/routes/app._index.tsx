@@ -1429,7 +1429,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
             {view === "bulk-variations" && <ToolCard
               id="bulk-variations"
               title="Bulk Variation manager"
-              badges={["parent SKU", "barcode", "color", "size"]}
+              badges={["parent SKU", "barcode", "option names"]}
             >
               <fetcher.Form method="post" encType="multipart/form-data">
                 <input type="hidden" name="intent" value="bulk-variations" />
@@ -1439,17 +1439,17 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                     fileName="variationsFile"
                   />
                   <div className={styles.warning}>
-                    Use the same Parent SKU for 2 to 20 barcodes. Fill Color,
-                    Size, or both to create matching Shopify variation options.
-                    The app creates a new parent product and does not delete the
-                    original listings automatically.
+                    Use the same Parent SKU for 2 to 20 barcodes. Choose Color,
+                    Size, or Set in the option name columns, then add the matching
+                    option values. The app creates a new parent product and does
+                    not delete the original listings automatically.
                   </div>
                   <details className={styles.details}>
                     <summary>JSON fallback</summary>
                     <textarea
                       className={styles.textarea}
                       name="variations"
-                      defaultValue='[{"parentSku":"ZH-808","barcode":"30801011","color":"Black","size":"Small"},{"parentSku":"ZH-808","barcode":"30801012","color":"White","size":"Medium"}]'
+                      defaultValue='[{"parentSku":"ZH-808","barcode":"30801011","option1Name":"Color","option1Value":"Black","option2Name":"Size","option2Value":"Small"},{"parentSku":"ZH-808","barcode":"30801012","option1Name":"Color","option1Value":"White","option2Name":"Size","option2Value":"Medium"}]'
                     />
                   </details>
                   <div className={styles.actions}>
