@@ -4,6 +4,7 @@ import { unauthenticated } from "../shopify.server";
 import {
   addProductsToCollection,
   applyProductActions,
+  createBulkVariations,
   createProducts,
   resolveStatusRowsProductIds,
   updateInventoryQuantities,
@@ -13,6 +14,7 @@ import {
   type ProductActionRow,
   type ProductImageRow,
   type ProductRow,
+  type VariationRow,
   type VariantUpdateRow,
 } from "./bulk-products.server";
 
@@ -378,6 +380,11 @@ async function runBulkJobIntent(
   if (intent === "bulk-images") {
     await progress(25, "Updating product images.");
     return updateProductImages(admin, (payload.rows || []) as ProductImageRow[]);
+  }
+
+  if (intent === "bulk-variations") {
+    await progress(25, "Creating parent variation products.");
+    return createBulkVariations(admin, (payload.rows || []) as VariationRow[]);
   }
 
   if (intent === "update-stock") {

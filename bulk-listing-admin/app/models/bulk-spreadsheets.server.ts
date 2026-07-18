@@ -15,6 +15,7 @@ export type TemplateKey =
   | "create-products"
   | "bulk-delete"
   | "bulk-images"
+  | "bulk-variations"
   | "update-prices"
   | "update-stock"
   | "add-to-collection"
@@ -89,6 +90,20 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
         "New image 6": "",
         "New image 7": "",
         "Product ID": "gid://shopify/Product/1234567890",
+      },
+    ],
+  },
+  "bulk-variations": {
+    fileName: "bulk-variation-manager-template.xlsx",
+    sheetName: "Bulk variations",
+    rows: [
+      {
+        "Parent SKU": "ZH-808",
+        Barcode: "30801011",
+      },
+      {
+        "Parent SKU": "ZH-808",
+        Barcode: "30801012",
       },
     ],
   },

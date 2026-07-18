@@ -1,0 +1,1 @@
+import{w as o}from"./chunk-KS7C4IRE-C0Usnt22.js";import{j as t}from"./jsx-runtime-2blBVIOC.js";import{B as r}from"./app._index-CJIVa4vR.js";const p=o(function(){return t.jsx(r,{view:"bulk-variations"})});export{p as default};

@@ -72,6 +72,13 @@ export type ProductImageRow = {
   imageUrls: string[];
 };
 
+export type VariationRow = {
+  parentSku: string;
+  barcode: string;
+};
+
+export const VARIATION_TEMPLATE_HEADERS = ["Parent SKU", "Barcode"];
+
 export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
   "Current stock",
@@ -376,6 +383,25 @@ export function normalizeImageRows(
       };
     })
     .filter((row) => row.barcode && row.imageUrls.length > 0);
+}
+
+export function normalizeVariationRows(
+  rows: (VariationRow | Record<string, unknown>)[],
+): VariationRow[] {
+  return rows
+    .map((row) => {
+      const raw = row as Record<string, unknown>;
+
+      if (raw.parentSku && raw.barcode) {
+        return row as VariationRow;
+      }
+
+      return {
+        parentSku: rowValue(raw, ["Parent SKU", "Parent Sku", "parentSku"]),
+        barcode: rowValue(raw, ["Barcode", "barcode"]),
+      };
+    })
+    .filter((row) => row.parentSku && row.barcode);
 }
 
 const STOCK_TEMPLATE_QUERY = `#graphql
@@ -1007,10 +1033,36 @@ async function findExistingVariantByBarcode(
           edges {
             node {
               id
+              title
+              sku
               barcode
+              price
+              compareAtPrice
+              inventoryPolicy
+              taxable
+              inventoryItem {
+                tracked
+                unitCost {
+                  amount
+                }
+              }
               product {
                 id
                 title
+                descriptionHtml
+                vendor
+                productType
+                status
+                category {
+                  id
+                }
+                featuredMedia {
+                  preview {
+                    image {
+                      url
+                    }
+                  }
+                }
               }
             }
           }
@@ -1025,6 +1077,261 @@ async function findExistingVariantByBarcode(
   }
 
   return json.data?.productVariants?.edges?.[0]?.node;
+}
+
+function groupVariationRows(rows: VariationRow[]) {
+  return rows.reduce<Record<string, VariationRow[]>>((groups, row) => {
+    groups[row.parentSku] ||= [];
+    groups[row.parentSku].push(row);
+    return groups;
+  }, {});
+}
+
+async function createVariationProduct(
+  admin: GraphqlClient,
+  parentSku: string,
+  sourceVariants: any[],
+) {
+  const firstVariant = sourceVariants[0];
+  const firstProduct = firstVariant?.product || {};
+  const optionValues = sourceVariants.map((variant) => ({
+    name: String(variant.barcode || ""),
+  }));
+  const mediaSrc = sourceVariants
+    .map((variant) => variant.product?.featuredMedia?.preview?.image?.url || "")
+    .filter(Boolean);
+  const productResponse = await admin.graphql(
+    `#graphql
+      mutation BulkVariationProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+        productCreate(product: $product, media: $media) {
+          product {
+            id
+            title
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+    {
+      variables: {
+        product: {
+          title: parentSku,
+          descriptionHtml: firstProduct.descriptionHtml || undefined,
+          vendor: firstProduct.vendor || undefined,
+          productType: firstProduct.productType || undefined,
+          category: firstProduct.category?.id || undefined,
+          status: "DRAFT",
+          productOptions: [
+            {
+              name: "Barcode",
+              values: optionValues,
+            },
+          ],
+        },
+        media: mediaSrc.length
+          ? Array.from(new Set(mediaSrc)).map((url) => ({
+              mediaContentType: "IMAGE",
+              originalSource: url,
+            }))
+          : undefined,
+      },
+    },
+  );
+  const productJson = await productResponse.json();
+
+  if (productJson.errors?.length) {
+    throw new Error(graphqlErrorMessage(productJson.errors));
+  }
+
+  const productCreate = productJson.data?.productCreate;
+  const productErrors = productCreate?.userErrors || [];
+
+  if (productErrors.length) {
+    throw new Error(productErrors.map((error: any) => error.message).join("; "));
+  }
+
+  const productId = productCreate?.product?.id;
+
+  if (!productId) {
+    throw new Error("Shopify did not return a parent variation product.");
+  }
+
+  const variants = sourceVariants.map((variant) => {
+    const inventoryItem = compactObject({
+      sku: variant.sku || `${parentSku}-${variant.barcode}`,
+      cost: decimalStringValue(String(variant.inventoryItem?.unitCost?.amount || "")),
+      tracked: variant.inventoryItem?.tracked,
+    });
+
+    return compactObject({
+      barcode: variant.barcode || undefined,
+      price: decimalStringValue(String(variant.price || "")),
+      compareAtPrice: decimalStringValue(String(variant.compareAtPrice || "")),
+      taxable: variant.taxable,
+      inventoryPolicy: variant.inventoryPolicy,
+      inventoryItem:
+        Object.keys(inventoryItem).length > 0 ? inventoryItem : undefined,
+      optionValues: [
+        {
+          name: String(variant.barcode || ""),
+          optionName: "Barcode",
+        },
+      ],
+      mediaSrc: variant.product?.featuredMedia?.preview?.image?.url
+        ? [variant.product.featuredMedia.preview.image.url]
+        : undefined,
+    });
+  });
+  const variantsResponse = await admin.graphql(
+    `#graphql
+      mutation BulkVariationVariantsCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkCreate(
+          productId: $productId,
+          variants: $variants,
+          strategy: REMOVE_STANDALONE_VARIANT
+        ) {
+          product {
+            id
+          }
+          productVariants {
+            id
+            title
+            barcode
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+    {
+      variables: {
+        productId,
+        variants,
+      },
+    },
+  );
+  const variantsJson = await variantsResponse.json();
+
+  if (variantsJson.errors?.length) {
+    throw new Error(graphqlErrorMessage(variantsJson.errors));
+  }
+
+  const variantsCreate = variantsJson.data?.productVariantsBulkCreate;
+  const variantErrors = variantsCreate?.userErrors || [];
+
+  if (variantErrors.length) {
+    throw new Error(variantErrors.map((error: any) => error.message).join("; "));
+  }
+
+  return {
+    productId,
+    variantsCreated: variantsCreate?.productVariants?.length || variants.length,
+  };
+}
+
+export async function createBulkVariations(
+  admin: GraphqlClient,
+  rows: VariationRow[],
+) {
+  if (!rows.length) {
+    throw new Error("Add Parent SKU and Barcode rows before uploading.");
+  }
+
+  const reportRows = [];
+  const grouped = groupVariationRows(rows);
+
+  for (const [parentSku, groupRows] of Object.entries(grouped)) {
+    const uniqueBarcodes = Array.from(
+      new Set(groupRows.map((row) => row.barcode.trim()).filter(Boolean)),
+    );
+
+    if (uniqueBarcodes.length < 2) {
+      reportRows.push({
+        parentSku,
+        barcode: uniqueBarcodes[0] || "",
+        status: "Error",
+        message: "At least 2 barcodes are required to create variations.",
+        productId: "",
+      });
+      continue;
+    }
+
+    if (uniqueBarcodes.length > 20) {
+      uniqueBarcodes.forEach((barcode) =>
+        reportRows.push({
+          parentSku,
+          barcode,
+          status: "Error",
+          message: "A parent SKU can contain maximum 20 barcodes.",
+          productId: "",
+        }),
+      );
+      continue;
+    }
+
+    const sourceVariants = [];
+    const missingBarcodes = [];
+
+    for (const barcode of uniqueBarcodes) {
+      const variant = await findExistingVariantByBarcode(admin, barcode);
+
+      if (!variant?.id) {
+        missingBarcodes.push(barcode);
+      } else {
+        sourceVariants.push(variant);
+      }
+    }
+
+    if (missingBarcodes.length) {
+      missingBarcodes.forEach((barcode) =>
+        reportRows.push({
+          parentSku,
+          barcode,
+          status: "Error",
+          message: "Could not find an existing Shopify variant for this barcode.",
+          productId: "",
+        }),
+      );
+      continue;
+    }
+
+    try {
+      const result = await createVariationProduct(admin, parentSku, sourceVariants);
+
+      uniqueBarcodes.forEach((barcode) =>
+        reportRows.push({
+          parentSku,
+          barcode,
+          status: "Success",
+          message: `Created under parent SKU ${parentSku}. Original listing was not deleted.`,
+          productId: result.productId,
+        }),
+      );
+    } catch (error) {
+      uniqueBarcodes.forEach((barcode) =>
+        reportRows.push({
+          parentSku,
+          barcode,
+          status: "Error",
+          message: errorMessage(error, "Variation product create failed."),
+          productId: "",
+        }),
+      );
+    }
+  }
+
+  return {
+    summary: {
+      total: reportRows.length,
+      success: reportRows.filter((row) => row.status === "Success").length,
+      error: reportRows.filter((row) => row.status === "Error").length,
+      parents: Object.keys(grouped).length,
+    },
+    rows: reportRows,
+  };
 }
 
 async function resolveProductIdFromBarcode(

@@ -9,6 +9,7 @@ import {
   IMAGE_TEMPLATE_HEADERS,
   PRICE_TEMPLATE_HEADERS,
   STOCK_TEMPLATE_HEADERS,
+  VARIATION_TEMPLATE_HEADERS,
 } from "../models/bulk-products.server";
 import {
   createWorkbookWithDropdownsFromRows,
@@ -34,6 +35,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         ? await createImageTemplateWorkbook(request)
       : template === "bulk-delete"
         ? await createBulkDeleteTemplateWorkbook(request)
+      : template === "bulk-variations"
+        ? await createVariationTemplateWorkbook()
       : template === "create-products"
         ? await createProductTemplateWorkbook()
       : createTemplateWorkbook(template);
@@ -100,6 +103,16 @@ async function createBulkDeleteTemplateWorkbook(request: Request) {
     dropdowns: {
       Action: ["Active", "Draft", "Unlist", "Delete"],
     },
+  });
+}
+
+function createVariationTemplateWorkbook() {
+  return createWorkbookWithDropdownsFromRows({
+    fileName: templateDefinitions["bulk-variations"].fileName,
+    sheetName: templateDefinitions["bulk-variations"].sheetName,
+    rows: templateDefinitions["bulk-variations"].rows,
+    headers: VARIATION_TEMPLATE_HEADERS,
+    dropdowns: {},
   });
 }
 

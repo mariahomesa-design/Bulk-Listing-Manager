@@ -21,9 +21,11 @@ import {
   normalizePriceRows,
   normalizeProductRows,
   normalizeStockRows,
+  normalizeVariationRows,
   parseJsonRows,
   type ProductActionRow,
   type ProductRow,
+  type VariationRow,
   type VariantUpdateRow,
 } from "../models/bulk-products.server";
 import {
@@ -328,6 +330,7 @@ function TemplateUpload({
     | "create-products"
     | "bulk-delete"
     | "bulk-images"
+    | "bulk-variations"
     | "update-status"
     | "update-prices"
     | "update-stock"
@@ -590,6 +593,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return enqueue({ rows }, ["imagesFile"]);
     }
 
+    if (intent === "bulk-variations") {
+      const rows = normalizeVariationRows(
+        await getRowsFromUpload<Record<string, unknown> | VariationRow>(
+          formData,
+          "variationsFile",
+          "variations",
+        ),
+      );
+
+      return enqueue({ rows }, ["variationsFile"]);
+    }
+
     if (intent === "update-stock") {
       const rows = normalizeStockRows(
         await getRowsFromUpload<Record<string, unknown> | VariantUpdateRow>(
@@ -631,6 +646,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           "variantsFile",
           "productActionsFile",
           "imagesFile",
+          "variationsFile",
         ]),
         error: message,
       });
@@ -649,7 +665,8 @@ export type BulkManagerView =
   | "bulk-delete-status"
   | "update-prices"
   | "update-stock"
-  | "bulk-images";
+  | "bulk-images"
+  | "bulk-variations";
 
 const viewContent: Record<
   Exclude<BulkManagerView, "dashboard">,
@@ -685,6 +702,12 @@ const viewContent: Record<
     description:
       "Export existing listing images by barcode, add new image URLs in Excel, and attach them to matching Shopify products.",
   },
+  "bulk-variations": {
+    eyebrow: "Variant operations",
+    title: "Bulk Variation manager",
+    description:
+      "Group existing barcodes under a shared Parent SKU and create a new Shopify product with those barcodes as variants.",
+  },
 };
 
 const intentLabels: Record<string, string> = {
@@ -694,6 +717,7 @@ const intentLabels: Record<string, string> = {
   "update-prices": "Update prices",
   "update-stock": "Update stock",
   "bulk-images": "Bulk image update",
+  "bulk-variations": "Bulk Variation manager",
   "add-to-collection": "Add to collection",
 };
 
@@ -703,6 +727,7 @@ const viewIntent: Partial<Record<BulkManagerView, string>> = {
   "update-prices": "update-prices",
   "update-stock": "update-stock",
   "bulk-images": "bulk-images",
+  "bulk-variations": "bulk-variations",
 };
 
 function formatDateTime(value?: string | Date | null) {
@@ -821,6 +846,13 @@ function Dashboard({
       text: "Attach new listing images by barcode using exported current image columns.",
       href: "/app/bulk-images",
       tone: "blue",
+    },
+    {
+      number: "06",
+      title: "Bulk Variation manager",
+      text: "Group 2 to 20 existing barcodes under one Parent SKU as a new variation product.",
+      href: "/app/bulk-variations",
+      tone: "green",
     },
   ];
 
@@ -1388,6 +1420,44 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                       disabled={isSubmitting}
                     >
                       Update images
+                    </button>
+                  </div>
+                </div>
+              </fetcher.Form>
+            </ToolCard>}
+
+            {view === "bulk-variations" && <ToolCard
+              id="bulk-variations"
+              title="Bulk Variation manager"
+              badges={["parent SKU", "barcode", "2-20 variants"]}
+            >
+              <fetcher.Form method="post" encType="multipart/form-data">
+                <input type="hidden" name="intent" value="bulk-variations" />
+                <div className={styles.toolBody}>
+                  <TemplateUpload
+                    template="bulk-variations"
+                    fileName="variationsFile"
+                  />
+                  <div className={styles.warning}>
+                    Use the same Parent SKU for 2 to 20 barcodes. The app creates
+                    a new parent product with those barcodes as variants and does
+                    not delete the original listings automatically.
+                  </div>
+                  <details className={styles.details}>
+                    <summary>JSON fallback</summary>
+                    <textarea
+                      className={styles.textarea}
+                      name="variations"
+                      defaultValue='[{"parentSku":"ZH-808","barcode":"30801011"},{"parentSku":"ZH-808","barcode":"30801012"}]'
+                    />
+                  </details>
+                  <div className={styles.actions}>
+                    <button
+                      className={styles.primaryButton}
+                      type="submit"
+                      disabled={isSubmitting}
+                    >
+                      Create variations
                     </button>
                   </div>
                 </div>

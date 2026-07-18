@@ -23,6 +23,7 @@ export default function App() {
         <s-link href="/app/update-prices">Update prices</s-link>
         <s-link href="/app/update-stock">Update stock</s-link>
         <s-link href="/app/bulk-images">Bulk image update</s-link>
+        <s-link href="/app/bulk-variations">Bulk Variation manager</s-link>
         <s-link href="/app/additional">Roadmap</s-link>
       </s-app-nav>
       <Outlet />
