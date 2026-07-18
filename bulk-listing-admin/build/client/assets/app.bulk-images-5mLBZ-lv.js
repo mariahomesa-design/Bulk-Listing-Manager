@@ -1,1 +1,0 @@
-import{w as o}from"./chunk-KS7C4IRE-C0Usnt22.js";import{j as s}from"./jsx-runtime-2blBVIOC.js";import{B as t}from"./app._index-C4L-436O.js";const p=o(function(){return s.jsx(t,{view:"bulk-images"})});export{p as default};

@@ -785,7 +785,6 @@ function Dashboard({
   collectionCount,
   locations,
   activityLog,
-  shopify,
 }: any) {
   const workflows = [
     {
@@ -915,39 +914,6 @@ function Dashboard({
             </div>
             <div className={styles.panelBody}>
               <ActivityLog entries={activityLog.slice(0, 6)} compact />
-            </div>
-          </section>
-
-          <section className={styles.panel}>
-            <div className={styles.panelHeaderRow}>
-              <div>
-                <div className={styles.panelHeader}>Recent products</div>
-                <div className={styles.panelSubhead}>Latest catalog activity</div>
-              </div>
-              <span className={styles.countBadge}>{Math.min(products.length, 8)}</span>
-            </div>
-            <div className={styles.panelBody}>
-              {products.slice(0, 8).map((product: any) => (
-                <div className={styles.productRow} key={product.id}>
-                  <div>
-                    <div className={styles.productTitle}>{product.title}</div>
-                    <div className={styles.productMeta}>
-                      {product.status} | Stock {product.totalInventory ?? 0}
-                    </div>
-                  </div>
-                  <button
-                    className={styles.editButton}
-                    type="button"
-                    onClick={() =>
-                      shopify.intents.invoke?.("edit:shopify/Product", {
-                        value: product.id,
-                      })
-                    }
-                  >
-                    Edit
-                  </button>
-                </div>
-              ))}
             </div>
           </section>
         </aside>
@@ -1185,7 +1151,6 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
             collectionCount={collectionCount}
             locations={locations}
             activityLog={activityLog}
-            shopify={shopify}
           />
         </div>
       </s-page>
