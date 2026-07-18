@@ -1398,6 +1398,7 @@ async function findExistingVariantByBarcode(admin, barcode) {
                   id
                 }
                 featuredMedia {
+                  id
                   preview {
                     image {
                       url
@@ -1529,6 +1530,57 @@ async function ensureVariationOptions(admin, productId, sources) {
   }
   return optionNames;
 }
+async function createProductMedia(admin, productId, mediaUrls) {
+  const uniqueUrls = Array.from(new Set(mediaUrls.filter(Boolean)));
+  if (!uniqueUrls.length) {
+    return /* @__PURE__ */ new Map();
+  }
+  const response = await admin.graphql(
+    `#graphql
+      mutation BulkListingCreateVariationMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+        productCreateMedia(productId: $productId, media: $media) {
+          media {
+            id
+            ... on MediaImage {
+              image {
+                url
+              }
+            }
+          }
+          mediaUserErrors {
+            field
+            message
+          }
+        }
+      }`,
+    {
+      variables: {
+        productId,
+        media: uniqueUrls.map((url) => ({
+          mediaContentType: "IMAGE",
+          originalSource: url
+        }))
+      }
+    }
+  );
+  const json = await response.json();
+  if (json.errors?.length) {
+    throw new Error(graphqlErrorMessage(json.errors));
+  }
+  const result2 = json.data?.productCreateMedia;
+  const userErrors = result2?.mediaUserErrors || [];
+  if (userErrors.length) {
+    throw new Error(userErrors.map((error) => error.message).join("; "));
+  }
+  const mediaByUrl = /* @__PURE__ */ new Map();
+  (result2?.media || []).forEach((media, index) => {
+    const sourceUrl = uniqueUrls[index];
+    if (sourceUrl && media?.id) {
+      mediaByUrl.set(sourceUrl, media.id);
+    }
+  });
+  return mediaByUrl;
+}
 async function createVariationsOnExistingProduct(admin, parentProductId, sources) {
   const optionNames = await ensureVariationOptions(
     admin,
@@ -1542,8 +1594,11 @@ async function createVariationsOnExistingProduct(admin, parentProductId, sources
       variantsCreated: 0
     };
   }
+  const childMediaUrls = childSources.map((source) => source.variant.product?.featuredMedia?.preview?.image?.url || "").filter(Boolean);
+  const mediaByUrl = await createProductMedia(admin, parentProductId, childMediaUrls);
   const variants = childSources.map((source) => {
     const variant = source.variant;
+    const mediaUrl = variant.product?.featuredMedia?.preview?.image?.url || "";
     const inventoryItem = compactObject({
       sku: variant.sku || variant.barcode,
       cost: decimalStringValue(
@@ -1559,7 +1614,7 @@ async function createVariationsOnExistingProduct(admin, parentProductId, sources
       inventoryPolicy: variant.inventoryPolicy,
       inventoryItem: Object.keys(inventoryItem).length > 0 ? inventoryItem : void 0,
       optionValues: variationOptionValues(source, optionNames),
-      mediaSrc: variant.product?.featuredMedia?.preview?.image?.url ? [variant.product.featuredMedia.preview.image.url] : void 0
+      mediaId: mediaByUrl.get(mediaUrl) || void 0
     });
   });
   const variantsResponse = await admin.graphql(
