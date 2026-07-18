@@ -604,6 +604,7 @@ const VARIATION_TEMPLATE_HEADERS = [
   "Option 2 Value"
 ];
 const BULK_DELETE_TEMPLATE_HEADERS = [
+  "Title",
   "Barcode",
   "Current stock",
   "Current status",
@@ -805,9 +806,10 @@ function normalizeProductActionRows(rows) {
     return {
       productId: rowValue(raw, ["Product ID", "productId"]),
       barcode: rowValue(raw, ["Barcode", "barcode"]),
+      title: rowValue(raw, ["Title", "Product title", "title"]),
       action: productActionValue(rowValue(raw, ["Action", "Status", "status"]))
     };
-  }).filter((row) => (row.productId || row.barcode) && row.action);
+  }).filter((row) => (row.productId || row.barcode || row.title) && row.action);
 }
 function normalizeImageRows(rows) {
   return rows.map((row) => {
@@ -1033,6 +1035,7 @@ const BULK_DELETE_TEMPLATE_QUERY = `#graphql
       edges {
         node {
           id
+          title
           status
           variants(first: 1) {
             edges {
@@ -1064,6 +1067,7 @@ async function getBulkDeleteTemplateRows(admin) {
       const product = edge.node;
       const variant = product.variants?.edges?.[0]?.node;
       rows.push({
+        Title: product.title || "",
         Barcode: variant?.barcode || "",
         "Current stock": variant?.inventoryQuantity ?? "",
         "Current status": product.status === "ACTIVE" ? "Active" : product.status === "ARCHIVED" ? "Unlist" : "Draft",
@@ -1669,6 +1673,41 @@ async function resolveProductIdFromBarcode(admin, barcode, cache) {
   cache.set(normalizedBarcode, productId);
   return productId;
 }
+async function resolveProductIdFromTitle(admin, title2, cache) {
+  const normalizedTitle = title2?.trim();
+  if (!normalizedTitle) {
+    return "";
+  }
+  if (cache.has(normalizedTitle)) {
+    return cache.get(normalizedTitle) || "";
+  }
+  const response = await admin.graphql(
+    `#graphql
+      query BulkListingProductByTitle($query: String!) {
+        products(first: 2, query: $query) {
+          edges {
+            node {
+              id
+              title
+            }
+          }
+        }
+      }`,
+    {
+      variables: {
+        query: `title:'${normalizedTitle.replace(/'/g, "\\'")}'`
+      }
+    }
+  );
+  const json = await response.json();
+  if (json.errors?.length) {
+    throw new Error(json.errors.map((error) => error.message).join(", "));
+  }
+  const matches = json.data?.products?.edges?.map((edge) => edge.node).filter((product) => product.title === normalizedTitle) || [];
+  const productId = matches.length === 1 ? matches[0].id : "";
+  cache.set(normalizedTitle, productId);
+  return productId;
+}
 async function resolveStatusRowsProductIds(admin, rows) {
   const barcodeCache = /* @__PURE__ */ new Map();
   const resolved = [];
@@ -2143,15 +2182,17 @@ async function applyProductActions(admin, rows) {
   const deleteIds = [];
   const missingRows = [];
   const barcodeCache = /* @__PURE__ */ new Map();
+  const titleCache = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    const productId = row.productId || await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache);
+    const productId = row.productId || await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache) || await resolveProductIdFromTitle(admin, row.title, titleCache);
     if (!productId) {
       missingRows.push({
         barcode: row.barcode || "",
+        title: row.title || "",
         productId: "",
         action: row.action || "",
         success: false,
-        message: "Could not find a Shopify product for this barcode."
+        message: "Could not find one exact Shopify product for this barcode or title."
       });
       continue;
     }
