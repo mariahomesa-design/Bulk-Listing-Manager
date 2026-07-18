@@ -37,10 +37,14 @@ model BulkJob {
   id          String    @id @default(cuid())
   shop        String
   intent      String
+  fileName    String?
+  uploadedBy  String?
   status      String    @default("queued")
   progress    Int       @default(0)
   totalRows   Int       @default(0)
   processedRows Int     @default(0)
+  successRows Int       @default(0)
+  failedRows  Int       @default(0)
   message     String?
   payload     Json
   result      Json?

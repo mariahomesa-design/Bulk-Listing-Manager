@@ -1,0 +1,1 @@
+import{w as t}from"./chunk-KS7C4IRE-C0Usnt22.js";import{j as r}from"./jsx-runtime-2blBVIOC.js";import{B as o}from"./app._index-C4L-436O.js";const u=t(function(){return r.jsx(o,{view:"create-products"})});export{u as default};

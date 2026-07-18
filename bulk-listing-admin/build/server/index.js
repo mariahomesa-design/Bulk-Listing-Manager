@@ -2192,15 +2192,105 @@ const activeJobs = /* @__PURE__ */ new Set();
 function rowCount(payload) {
   return payload.rows?.length || payload.productIds?.length || 0;
 }
+function numericValue(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function isSuccessfulRow(row) {
+  if (!row || typeof row !== "object") {
+    return false;
+  }
+  const value = row;
+  if (typeof value.success === "boolean") {
+    return value.success;
+  }
+  const status = String(value.status || value.Status || "").toLowerCase();
+  if (status.includes("error") || status.includes("failed")) {
+    return false;
+  }
+  return status.includes("success") || status.includes("warning");
+}
+function countBooleanRows(rows) {
+  return rows.reduce(
+    (counts, row) => {
+      if (isSuccessfulRow(row)) {
+        counts.successRows += 1;
+      } else {
+        counts.failedRows += 1;
+      }
+      return counts;
+    },
+    { successRows: 0, failedRows: 0 }
+  );
+}
+function summarizeJobResult(totalRows, result2, error) {
+  if (error) {
+    return { successRows: 0, failedRows: totalRows };
+  }
+  if (!result2 || typeof result2 !== "object") {
+    return { successRows: totalRows, failedRows: 0 };
+  }
+  const value = result2;
+  if (Array.isArray(value.reportRows)) {
+    return value.reportRows.reduce(
+      (counts, row) => {
+        const status = String(row.status || "").toLowerCase();
+        if (status === "success" || status === "warning") {
+          counts.successRows += 1;
+        } else {
+          counts.failedRows += 1;
+        }
+        return counts;
+      },
+      { successRows: 0, failedRows: 0 }
+    );
+  }
+  if (value.stock || value.statuses) {
+    const stockSuccess = Math.max(
+      0,
+      numericValue(value.stock?.updatedRows) - numericValue(value.stock?.failedRows)
+    );
+    const stockFailed = numericValue(value.stock?.failedRows);
+    const statusCounts = Array.isArray(value.statuses) ? countBooleanRows(value.statuses.flat()) : { successRows: 0, failedRows: 0 };
+    return {
+      successRows: stockSuccess + statusCounts.successRows,
+      failedRows: stockFailed + statusCounts.failedRows
+    };
+  }
+  if (value.summary) {
+    const summary = value.summary;
+    const successRows = numericValue(summary.success) || numericValue(summary.variants) || numericValue(summary.products);
+    const failedRows = numericValue(summary.error) || numericValue(summary.errors) || numericValue(summary.failed);
+    return { successRows, failedRows };
+  }
+  if (Array.isArray(value.rows)) {
+    return countBooleanRows(value.rows);
+  }
+  if (Array.isArray(result2)) {
+    return countBooleanRows(result2.flat());
+  }
+  if (Array.isArray(value.errors) && value.errors.length > 0) {
+    const failedRows = value.errors.reduce(
+      (count, row) => count + numericValue(row.rows || row.variants || 1),
+      0
+    );
+    return { successRows: Math.max(0, totalRows - failedRows), failedRows };
+  }
+  return { successRows: totalRows, failedRows: 0 };
+}
 async function createBulkJob({
   shop,
   intent,
-  payload
+  payload,
+  fileName,
+  uploadedBy
 }) {
   const job = await prisma.bulkJob.create({
     data: {
       shop,
       intent,
+      fileName,
+      uploadedBy,
       payload: JSON.parse(JSON.stringify(payload)),
       totalRows: rowCount(payload),
       message: "Waiting to start."
@@ -2208,6 +2298,58 @@ async function createBulkJob({
   });
   startBulkJob(job.id);
   return job;
+}
+async function recordFailedBulkJob({
+  shop,
+  intent,
+  fileName,
+  uploadedBy,
+  error
+}) {
+  return prisma.bulkJob.create({
+    data: {
+      shop,
+      intent,
+      fileName,
+      uploadedBy,
+      status: "failed",
+      progress: 100,
+      totalRows: 0,
+      processedRows: 0,
+      successRows: 0,
+      failedRows: 0,
+      payload: {},
+      error,
+      message: "Failed before processing.",
+      completedAt: /* @__PURE__ */ new Date()
+    }
+  });
+}
+async function getRecentBulkJobs(shop, intent, take = 10) {
+  return prisma.bulkJob.findMany({
+    where: {
+      shop,
+      ...{}
+    },
+    orderBy: { createdAt: "desc" },
+    take,
+    select: {
+      id: true,
+      intent: true,
+      fileName: true,
+      uploadedBy: true,
+      status: true,
+      totalRows: true,
+      processedRows: true,
+      successRows: true,
+      failedRows: true,
+      message: true,
+      error: true,
+      createdAt: true,
+      startedAt: true,
+      completedAt: true
+    }
+  });
 }
 async function getBulkJob(shop, id) {
   const job = await prisma.bulkJob.findFirst({
@@ -2256,24 +2398,32 @@ async function processBulkJob(id) {
     const payload = job.payload;
     await updateJobProgress(id, 15, "Processing uploaded rows.");
     const result2 = await runBulkJobIntent(admin, job.intent, payload, async (progress, message) => updateJobProgress(id, progress, message));
+    const counts = summarizeJobResult(job.totalRows, result2);
     await prisma.bulkJob.update({
       where: { id },
       data: {
         status: "completed",
         progress: 100,
         processedRows: job.totalRows,
+        successRows: counts.successRows,
+        failedRows: counts.failedRows,
         result: JSON.parse(JSON.stringify(result2)),
         completedAt: /* @__PURE__ */ new Date(),
         message: "Completed."
       }
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Bulk job failed.";
+    const counts = summarizeJobResult(job.totalRows, null, message);
     await prisma.bulkJob.update({
       where: { id },
       data: {
         status: "failed",
         progress: 100,
-        error: error instanceof Error ? error.message : "Bulk job failed.",
+        processedRows: 0,
+        successRows: counts.successRows,
+        failedRows: counts.failedRows,
+        error: message,
         completedAt: /* @__PURE__ */ new Date(),
         message: "Failed."
       }
@@ -2387,77 +2537,89 @@ async function runBulkJobIntent(admin, intent, payload, progress) {
   }
   throw new Error("Unknown bulk action.");
 }
-const shell = "_shell_18bd4_1";
-const dashboardHero = "_dashboardHero_18bd4_9";
-const dashboardTitle = "_dashboardTitle_18bd4_20";
-const dashboardSubtitle = "_dashboardSubtitle_18bd4_28";
-const liveBadge = "_liveBadge_18bd4_36";
-const liveDot = "_liveDot_18bd4_50";
-const metricGrid = "_metricGrid_18bd4_58";
-const metricCard = "_metricCard_18bd4_64";
-const metricCaption = "_metricCaption_18bd4_85";
-const healthyValue = "_healthyValue_18bd4_92";
-const dashboardLayout = "_dashboardLayout_18bd4_97";
-const sectionHeading = "_sectionHeading_18bd4_104";
-const workflowGrid = "_workflowGrid_18bd4_123";
-const workflowCard = "_workflowCard_18bd4_129";
-const red = "_red_18bd4_162";
-const blue = "_blue_18bd4_163";
-const amber = "_amber_18bd4_164";
-const workflowNumber = "_workflowNumber_18bd4_166";
-const workflowArrow = "_workflowArrow_18bd4_184";
-const dashboardAside = "_dashboardAside_18bd4_190";
-const panelHeaderRow = "_panelHeaderRow_18bd4_195";
-const panelHeader = "_panelHeader_18bd4_195";
-const panelSubhead = "_panelSubhead_18bd4_208";
-const countBadge = "_countBadge_18bd4_214";
-const topbar = "_topbar_18bd4_227";
-const toolPageHeader = "_toolPageHeader_18bd4_234";
-const backLink = "_backLink_18bd4_245";
-const stepStrip = "_stepStrip_18bd4_256";
-const titleBlock = "_titleBlock_18bd4_289";
-const eyebrow = "_eyebrow_18bd4_294";
-const title = "_title_18bd4_289";
-const subtitle = "_subtitle_18bd4_308";
-const statusStrip = "_statusStrip_18bd4_314";
-const metric = "_metric_18bd4_58";
-const metricValue = "_metricValue_18bd4_328";
-const metricLabel = "_metricLabel_18bd4_335";
-const layout = "_layout_18bd4_341";
-const toolGrid = "_toolGrid_18bd4_348";
-const tool = "_tool_18bd4_234";
-const toolHeader = "_toolHeader_18bd4_362";
-const toolTitle = "_toolTitle_18bd4_372";
-const toolMeta = "_toolMeta_18bd4_379";
-const pill = "_pill_18bd4_386";
-const toolBody = "_toolBody_18bd4_399";
-const templateRow = "_templateRow_18bd4_405";
-const download = "_download_18bd4_412";
-const fileInput = "_fileInput_18bd4_437";
-const fieldGrid = "_fieldGrid_18bd4_444";
-const field = "_field_18bd4_444";
-const label = "_label_18bd4_455";
-const select = "_select_18bd4_461";
-const textarea = "_textarea_18bd4_462";
-const details = "_details_18bd4_483";
-const actions = "_actions_18bd4_495";
-const primaryButton = "_primaryButton_18bd4_502";
-const secondaryButton = "_secondaryButton_18bd4_520";
-const sidePanel = "_sidePanel_18bd4_536";
-const panel = "_panel_18bd4_195";
-const panelBody = "_panelBody_18bd4_554";
-const productRow = "_productRow_18bd4_560";
-const historyRow = "_historyRow_18bd4_571";
-const emptyHistory = "_emptyHistory_18bd4_582";
-const jobCard = "_jobCard_18bd4_592";
-const jobHeader = "_jobHeader_18bd4_601";
-const progressTrack = "_progressTrack_18bd4_613";
-const progressBar = "_progressBar_18bd4_620";
-const productTitle = "_productTitle_18bd4_628";
-const productMeta = "_productMeta_18bd4_637";
-const editButton = "_editButton_18bd4_643";
-const result = "_result_18bd4_655";
-const warning = "_warning_18bd4_666";
+const shell = "_shell_1urh9_1";
+const dashboardHero = "_dashboardHero_1urh9_9";
+const dashboardTitle = "_dashboardTitle_1urh9_20";
+const dashboardSubtitle = "_dashboardSubtitle_1urh9_28";
+const liveBadge = "_liveBadge_1urh9_36";
+const liveDot = "_liveDot_1urh9_50";
+const metricGrid = "_metricGrid_1urh9_58";
+const metricCard = "_metricCard_1urh9_64";
+const metricCaption = "_metricCaption_1urh9_85";
+const healthyValue = "_healthyValue_1urh9_92";
+const dashboardLayout = "_dashboardLayout_1urh9_97";
+const sectionHeading = "_sectionHeading_1urh9_104";
+const workflowGrid = "_workflowGrid_1urh9_123";
+const workflowCard = "_workflowCard_1urh9_129";
+const red = "_red_1urh9_162";
+const blue = "_blue_1urh9_163";
+const amber = "_amber_1urh9_164";
+const workflowNumber = "_workflowNumber_1urh9_166";
+const workflowArrow = "_workflowArrow_1urh9_184";
+const dashboardAside = "_dashboardAside_1urh9_190";
+const panelHeaderRow = "_panelHeaderRow_1urh9_195";
+const panelHeader = "_panelHeader_1urh9_195";
+const panelSubhead = "_panelSubhead_1urh9_208";
+const countBadge = "_countBadge_1urh9_214";
+const topbar = "_topbar_1urh9_227";
+const toolPageHeader = "_toolPageHeader_1urh9_234";
+const backLink = "_backLink_1urh9_245";
+const stepStrip = "_stepStrip_1urh9_256";
+const titleBlock = "_titleBlock_1urh9_289";
+const eyebrow = "_eyebrow_1urh9_294";
+const title = "_title_1urh9_289";
+const subtitle = "_subtitle_1urh9_308";
+const statusStrip = "_statusStrip_1urh9_314";
+const metric = "_metric_1urh9_58";
+const metricValue = "_metricValue_1urh9_328";
+const metricLabel = "_metricLabel_1urh9_335";
+const layout = "_layout_1urh9_341";
+const toolGrid = "_toolGrid_1urh9_348";
+const tool = "_tool_1urh9_234";
+const toolHeader = "_toolHeader_1urh9_362";
+const toolTitle = "_toolTitle_1urh9_372";
+const toolMeta = "_toolMeta_1urh9_379";
+const pill = "_pill_1urh9_386";
+const toolBody = "_toolBody_1urh9_399";
+const templateRow = "_templateRow_1urh9_405";
+const download = "_download_1urh9_412";
+const fileInput = "_fileInput_1urh9_437";
+const fieldGrid = "_fieldGrid_1urh9_444";
+const field = "_field_1urh9_444";
+const label = "_label_1urh9_455";
+const select = "_select_1urh9_461";
+const textarea = "_textarea_1urh9_462";
+const details = "_details_1urh9_483";
+const actions = "_actions_1urh9_495";
+const primaryButton = "_primaryButton_1urh9_502";
+const secondaryButton = "_secondaryButton_1urh9_520";
+const sidePanel = "_sidePanel_1urh9_536";
+const panel = "_panel_1urh9_195";
+const panelBody = "_panelBody_1urh9_554";
+const productRow = "_productRow_1urh9_560";
+const historyRow = "_historyRow_1urh9_571";
+const activityList = "_activityList_1urh9_582";
+const activityListCompact = "_activityListCompact_1urh9_583";
+const activityRow = "_activityRow_1urh9_588";
+const activityMain = "_activityMain_1urh9_603";
+const activityTitle = "_activityTitle_1urh9_607";
+const statusBadge = "_statusBadge_1urh9_617";
+const statusOk = "_statusOk_1urh9_626";
+const statusError = "_statusError_1urh9_631";
+const activityMeta = "_activityMeta_1urh9_636";
+const activityMessage = "_activityMessage_1urh9_637";
+const activityCounts = "_activityCounts_1urh9_648";
+const failedCount = "_failedCount_1urh9_675";
+const emptyHistory = "_emptyHistory_1urh9_679";
+const jobCard = "_jobCard_1urh9_689";
+const jobHeader = "_jobHeader_1urh9_698";
+const progressTrack = "_progressTrack_1urh9_710";
+const progressBar = "_progressBar_1urh9_717";
+const productTitle = "_productTitle_1urh9_725";
+const productMeta = "_productMeta_1urh9_734";
+const editButton = "_editButton_1urh9_740";
+const result = "_result_1urh9_752";
+const warning = "_warning_1urh9_763";
 const styles = {
   shell,
   dashboardHero,
@@ -2520,6 +2682,18 @@ const styles = {
   panelBody,
   productRow,
   historyRow,
+  activityList,
+  activityListCompact,
+  activityRow,
+  activityMain,
+  activityTitle,
+  statusBadge,
+  statusOk,
+  statusError,
+  activityMeta,
+  activityMessage,
+  activityCounts,
+  failedCount,
   emptyHistory,
   jobCard,
   jobHeader,
@@ -2682,6 +2856,15 @@ async function getRowsFromUpload(formData, fileField, fallbackField) {
   }
   return parseJsonRows(formData.get(fallbackField));
 }
+function uploadedFileName(formData, fileFields) {
+  for (const field2 of fileFields) {
+    const value = formData.get(field2);
+    if (value && typeof value === "object" && "name" in value && typeof value.name === "string" && value.name.trim()) {
+      return value.name.trim();
+    }
+  }
+  return void 0;
+}
 function TemplateUpload({
   template,
   fileName
@@ -2774,9 +2957,14 @@ const loader$1 = async ({
   request
 }) => {
   const {
-    admin
+    admin,
+    session
   } = await authenticate.admin(request);
-  return getBulkManagerData(admin);
+  const [managerData, activityLog] = await Promise.all([getBulkManagerData(admin), getRecentBulkJobs(session.shop, void 0, 12)]);
+  return {
+    ...managerData,
+    activityLog
+  };
 };
 const action = async ({
   request
@@ -2786,11 +2974,15 @@ const action = async ({
   } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
-  async function enqueue(payload) {
+  const sessionUser = session;
+  const uploadedBy = [sessionUser.firstName, sessionUser.lastName].filter(Boolean).join(" ") || sessionUser.email || session.shop;
+  async function enqueue(payload, fileFields = []) {
     const job = await createBulkJob({
       shop: session.shop,
       intent,
-      payload
+      payload,
+      uploadedBy,
+      fileName: uploadedFileName(formData, fileFields)
     });
     return {
       intent,
@@ -2801,6 +2993,10 @@ const action = async ({
         progress: job.progress,
         totalRows: job.totalRows,
         processedRows: job.processedRows,
+        successRows: job.successRows,
+        failedRows: job.failedRows,
+        fileName: job.fileName,
+        uploadedBy: job.uploadedBy,
         message: job.message
       }
     };
@@ -2811,7 +3007,7 @@ const action = async ({
       return enqueue({
         rows,
         locationId: String(formData.get("locationId") || "")
-      });
+      }, ["productsFile"]);
     }
     if (intent === "update-status") {
       const uploadedRows = await parseWorkbookRows(formData.get("productIdsFile"));
@@ -2830,19 +3026,19 @@ const action = async ({
         return enqueue({
           statusGroups,
           rows: uploadedRows
-        });
+        }, ["productIdsFile"]);
       }
       const productIds = parseJsonRows(formData.get("productIds"));
       return enqueue({
         productIds,
         status
-      });
+      }, ["productIdsFile"]);
     }
     if (intent === "update-prices") {
       const rows = normalizePriceRows(await getRowsFromUpload(formData, "variantsFile", "variants"));
       return enqueue({
         rows
-      });
+      }, ["variantsFile"]);
     }
     if (intent === "bulk-delete") {
       const rows = normalizeProductActionRows(await getRowsFromUpload(formData, "productActionsFile", "productActions"));
@@ -2851,13 +3047,13 @@ const action = async ({
       }
       return enqueue({
         rows
-      });
+      }, ["productActionsFile"]);
     }
     if (intent === "bulk-images") {
       const rows = normalizeImageRows(await getRowsFromUpload(formData, "imagesFile", "productImages"));
       return enqueue({
         rows
-      });
+      }, ["imagesFile"]);
     }
     if (intent === "update-stock") {
       const rows = normalizeStockRows(await getRowsFromUpload(formData, "variantsFile", "variants"));
@@ -2865,7 +3061,7 @@ const action = async ({
       return enqueue({
         rows,
         locationId
-      });
+      }, ["variantsFile"]);
     }
     if (intent === "add-to-collection") {
       const uploadedRows = await parseWorkbookRows(formData.get("productIdsFile"));
@@ -2874,16 +3070,26 @@ const action = async ({
       return enqueue({
         collectionId,
         productIds
-      });
+      }, ["productIdsFile"]);
     }
     return {
       intent,
       error: "Unknown bulk action."
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Bulk action failed.";
+    if (intent) {
+      await recordFailedBulkJob({
+        shop: session.shop,
+        intent,
+        uploadedBy,
+        fileName: uploadedFileName(formData, ["productsFile", "productIdsFile", "variantsFile", "productActionsFile", "imagesFile"]),
+        error: message
+      });
+    }
     return {
       intent,
-      error: error instanceof Error ? error.message : "Bulk action failed."
+      error: message
     };
   }
 };
@@ -2914,6 +3120,83 @@ const viewContent = {
     description: "Export existing listing images by barcode, add new image URLs in Excel, and attach them to matching Shopify products."
   }
 };
+const intentLabels = {
+  "create-products": "Create products",
+  "bulk-delete": "Bulk delete / status",
+  "update-status": "Update status",
+  "update-prices": "Update prices",
+  "update-stock": "Update stock",
+  "bulk-images": "Bulk image update",
+  "add-to-collection": "Add to collection"
+};
+const viewIntent = {
+  "create-products": "create-products",
+  "bulk-delete-status": "bulk-delete",
+  "update-prices": "update-prices",
+  "update-stock": "update-stock",
+  "bulk-images": "bulk-images"
+};
+function formatDateTime(value) {
+  if (!value) {
+    return "Not finished";
+  }
+  return new Date(value).toLocaleString();
+}
+function ActivityLog({
+  entries,
+  compact = false
+}) {
+  return /* @__PURE__ */ jsxs("div", {
+    className: compact ? styles.activityListCompact : styles.activityList,
+    children: [entries.length === 0 && /* @__PURE__ */ jsx("div", {
+      className: styles.emptyHistory,
+      children: "No uploads have been recorded yet."
+    }), entries.map((entry2) => {
+      const failed = entry2.status === "failed" || entry2.failedRows > 0;
+      const finishedAt = entry2.completedAt || entry2.startedAt || entry2.createdAt;
+      return /* @__PURE__ */ jsxs("div", {
+        className: styles.activityRow,
+        children: [/* @__PURE__ */ jsxs("div", {
+          className: styles.activityMain,
+          children: [/* @__PURE__ */ jsxs("div", {
+            className: styles.activityTitle,
+            children: [/* @__PURE__ */ jsx("span", {
+              children: intentLabels[entry2.intent] || entry2.intent
+            }), /* @__PURE__ */ jsx("span", {
+              className: `${styles.statusBadge} ${failed ? styles.statusError : styles.statusOk}`,
+              children: entry2.status
+            })]
+          }), /* @__PURE__ */ jsxs("div", {
+            className: styles.activityMeta,
+            children: [entry2.fileName || "JSON/manual input", " by", " ", entry2.uploadedBy || "Unknown user"]
+          }), /* @__PURE__ */ jsx("div", {
+            className: styles.activityMeta,
+            children: formatDateTime(finishedAt)
+          }), (entry2.error || entry2.message) && /* @__PURE__ */ jsx("div", {
+            className: styles.activityMessage,
+            children: entry2.error || entry2.message
+          })]
+        }), /* @__PURE__ */ jsxs("div", {
+          className: styles.activityCounts,
+          children: [/* @__PURE__ */ jsxs("span", {
+            children: [/* @__PURE__ */ jsx("b", {
+              children: entry2.totalRows.toLocaleString()
+            }), "Rows"]
+          }), /* @__PURE__ */ jsxs("span", {
+            children: [/* @__PURE__ */ jsx("b", {
+              children: entry2.successRows.toLocaleString()
+            }), "Success"]
+          }), /* @__PURE__ */ jsxs("span", {
+            className: failed ? styles.failedCount : void 0,
+            children: [/* @__PURE__ */ jsx("b", {
+              children: entry2.failedRows.toLocaleString()
+            }), "Failed"]
+          })]
+        })]
+      }, entry2.id);
+    })]
+  });
+}
 function Dashboard({
   products,
   productCount,
@@ -2922,6 +3205,7 @@ function Dashboard({
   collections,
   collectionCount,
   locations,
+  activityLog,
   shopify: shopify2
 }) {
   const workflows = [{
@@ -3073,9 +3357,32 @@ function Dashboard({
             })]
           }, workflow.href))
         })]
-      }), /* @__PURE__ */ jsx("aside", {
+      }), /* @__PURE__ */ jsxs("aside", {
         className: styles.dashboardAside,
-        children: /* @__PURE__ */ jsxs("section", {
+        children: [/* @__PURE__ */ jsxs("section", {
+          className: styles.panel,
+          children: [/* @__PURE__ */ jsxs("div", {
+            className: styles.panelHeaderRow,
+            children: [/* @__PURE__ */ jsxs("div", {
+              children: [/* @__PURE__ */ jsx("div", {
+                className: styles.panelHeader,
+                children: "Activity log"
+              }), /* @__PURE__ */ jsx("div", {
+                className: styles.panelSubhead,
+                children: "Latest uploads and background jobs"
+              })]
+            }), /* @__PURE__ */ jsx("span", {
+              className: styles.countBadge,
+              children: activityLog.length
+            })]
+          }), /* @__PURE__ */ jsx("div", {
+            className: styles.panelBody,
+            children: /* @__PURE__ */ jsx(ActivityLog, {
+              entries: activityLog.slice(0, 6),
+              compact: true
+            })
+          })]
+        }), /* @__PURE__ */ jsxs("section", {
           className: styles.panel,
           children: [/* @__PURE__ */ jsxs("div", {
             className: styles.panelHeaderRow,
@@ -3113,7 +3420,7 @@ function Dashboard({
               })]
             }, product.id))
           })]
-        })
+        })]
       })]
     })]
   });
@@ -3128,7 +3435,8 @@ function BulkProducts({
     draftProductCount,
     collections,
     collectionCount,
-    locations
+    locations,
+    activityLog = []
   } = useLoaderData();
   const fetcher = useFetcher();
   const shopify2 = useAppBridge();
@@ -3296,12 +3604,14 @@ function BulkProducts({
           collections,
           collectionCount,
           locations,
+          activityLog,
           shopify: shopify2
         })
       })
     });
   }
   const page = viewContent[view];
+  const activityForView = activityLog.filter((entry2) => entry2.intent === viewIntent[view]);
   return /* @__PURE__ */ jsx("s-page", {
     heading: page.title,
     children: /* @__PURE__ */ jsxs("div", {
@@ -3569,9 +3879,9 @@ function BulkProducts({
               })]
             })
           })]
-        }), /* @__PURE__ */ jsx("aside", {
+        }), /* @__PURE__ */ jsxs("aside", {
           className: styles.sidePanel,
-          children: /* @__PURE__ */ jsxs("section", {
+          children: [/* @__PURE__ */ jsxs("section", {
             className: styles.panel,
             children: [/* @__PURE__ */ jsx("div", {
               className: styles.panelHeader,
@@ -3634,7 +3944,30 @@ function BulkProducts({
                 children: "Clear history"
               })]
             })]
-          })
+          }), /* @__PURE__ */ jsxs("section", {
+            className: styles.panel,
+            children: [/* @__PURE__ */ jsxs("div", {
+              className: styles.panelHeaderRow,
+              children: [/* @__PURE__ */ jsxs("div", {
+                children: [/* @__PURE__ */ jsx("div", {
+                  className: styles.panelHeader,
+                  children: "Activity log"
+                }), /* @__PURE__ */ jsx("div", {
+                  className: styles.panelSubhead,
+                  children: "Who uploaded, when, and row results"
+                })]
+              }), /* @__PURE__ */ jsx("span", {
+                className: styles.countBadge,
+                children: activityForView.length
+              })]
+            }), /* @__PURE__ */ jsx("div", {
+              className: styles.panelBody,
+              children: /* @__PURE__ */ jsx(ActivityLog, {
+                entries: activityForView.slice(0, 6),
+                compact: true
+              })
+            })]
+          })]
         })]
       })]
     })
@@ -3735,10 +4068,14 @@ const loader = async ({
   return Response.json({
     id: job.id,
     intent: job.intent,
+    fileName: job.fileName,
+    uploadedBy: job.uploadedBy,
     status: job.status,
     progress: job.progress,
     totalRows: job.totalRows,
     processedRows: job.processedRows,
+    successRows: job.successRows,
+    failedRows: job.failedRows,
     message: job.message,
     result: job.result,
     error: job.error,
@@ -3804,7 +4141,7 @@ const route18 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   __proto__: null,
   default: app_additional
 }, Symbol.toStringTag, { value: "Module" }));
-const serverManifest = { "entry": { "module": "/assets/entry.client-DJuTB8d2.js", "imports": ["/assets/jsx-runtime-2blBVIOC.js", "/assets/chunk-KS7C4IRE-C0Usnt22.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/root-CpHqi91C.js", "imports": ["/assets/jsx-runtime-2blBVIOC.js", "/assets/chunk-KS7C4IRE-C0Usnt22.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.customers.data_request": { "id": "routes/webhooks.customers.data_request", "parentId": "root", "path": "webhooks/customers/data_request", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.customers.data_request-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.app.scopes_update": { "id": "routes/webhooks.app.scopes_update", "parentId": "root", "path": "webhooks/app/scopes_update", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.app.scopes_update-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.customers.redact": { "id": "routes/webhooks.customers.redact", "parentId": "root", "path": "webhooks/customers/redact", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.customers.redact-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.app.uninstalled": { "id": "routes/webhooks.app.uninstalled", "parentId": "root", "path": "webhooks/app/uninstalled", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.app.uninstalled-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.shop.redact": { "id": "routes/webhooks.shop.redact", "parentId": "root", "path": "webhooks/shop/redact", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.shop.redact-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/auth.login": { "id": "routes/auth.login", "parentId": "root", "path": "auth/login", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/route-DmJgVSzx.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/AppProxyLink-DXaZtS5K.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/route-DN0Xmjfc.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/auth.$": { "id": "routes/auth.$", "parentId": "root", "path": "auth/*", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/auth._-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app": { "id": "routes/app", "parentId": "root", "path": "app", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": true, "module": "/assets/app-C6wLrnsQ.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/AppProxyLink-DXaZtS5K.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.app.templates.$template": { "id": "routes/app.app.templates.$template", "parentId": "routes/app", "path": "app/templates/:template", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/app.app.templates._template-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.templates.$template": { "id": "routes/app.templates.$template", "parentId": "routes/app", "path": "templates/:template", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/app.templates._template-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.bulk-delete-status": { "id": "routes/app.bulk-delete-status", "parentId": "routes/app", "path": "bulk-delete-status", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.bulk-delete-status-CSMS2kkt.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-fSsPhCeV.js"], "css": ["/assets/app-WUx2aLpX.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.create-products": { "id": "routes/app.create-products", "parentId": "routes/app", "path": "create-products", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.create-products-lXkfwOZL.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-fSsPhCeV.js"], "css": ["/assets/app-WUx2aLpX.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.update-prices": { "id": "routes/app.update-prices", "parentId": "routes/app", "path": "update-prices", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.update-prices-AUB2YIdc.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-fSsPhCeV.js"], "css": ["/assets/app-WUx2aLpX.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.update-stock": { "id": "routes/app.update-stock", "parentId": "routes/app", "path": "update-stock", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.update-stock-DfNdj3bm.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-fSsPhCeV.js"], "css": ["/assets/app-WUx2aLpX.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.bulk-images": { "id": "routes/app.bulk-images", "parentId": "routes/app", "path": "bulk-images", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.bulk-images--LE-LuIp.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-fSsPhCeV.js"], "css": ["/assets/app-WUx2aLpX.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.jobs.$jobId": { "id": "routes/app.jobs.$jobId", "parentId": "routes/app", "path": "jobs/:jobId", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/app.jobs._jobId-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.additional": { "id": "routes/app.additional", "parentId": "routes/app", "path": "additional", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.additional-DNQjhEqh.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app._index": { "id": "routes/app._index", "parentId": "routes/app", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app._index-AtE9YoLy.js", "imports": ["/assets/app._index-fSsPhCeV.js", "/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js"], "css": ["/assets/app-WUx2aLpX.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 } }, "url": "/assets/manifest-ca6dbfa0.js", "version": "ca6dbfa0", "sri": void 0 };
+const serverManifest = { "entry": { "module": "/assets/entry.client-DJuTB8d2.js", "imports": ["/assets/jsx-runtime-2blBVIOC.js", "/assets/chunk-KS7C4IRE-C0Usnt22.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/root-CpHqi91C.js", "imports": ["/assets/jsx-runtime-2blBVIOC.js", "/assets/chunk-KS7C4IRE-C0Usnt22.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.customers.data_request": { "id": "routes/webhooks.customers.data_request", "parentId": "root", "path": "webhooks/customers/data_request", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.customers.data_request-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.app.scopes_update": { "id": "routes/webhooks.app.scopes_update", "parentId": "root", "path": "webhooks/app/scopes_update", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.app.scopes_update-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.customers.redact": { "id": "routes/webhooks.customers.redact", "parentId": "root", "path": "webhooks/customers/redact", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.customers.redact-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.app.uninstalled": { "id": "routes/webhooks.app.uninstalled", "parentId": "root", "path": "webhooks/app/uninstalled", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.app.uninstalled-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/webhooks.shop.redact": { "id": "routes/webhooks.shop.redact", "parentId": "root", "path": "webhooks/shop/redact", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/webhooks.shop.redact-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/auth.login": { "id": "routes/auth.login", "parentId": "root", "path": "auth/login", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/route-DmJgVSzx.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/AppProxyLink-DXaZtS5K.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/route-DN0Xmjfc.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/auth.$": { "id": "routes/auth.$", "parentId": "root", "path": "auth/*", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/auth._-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app": { "id": "routes/app", "parentId": "root", "path": "app", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": true, "module": "/assets/app-C6wLrnsQ.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/AppProxyLink-DXaZtS5K.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.app.templates.$template": { "id": "routes/app.app.templates.$template", "parentId": "routes/app", "path": "app/templates/:template", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/app.app.templates._template-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.templates.$template": { "id": "routes/app.templates.$template", "parentId": "routes/app", "path": "templates/:template", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/app.templates._template-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.bulk-delete-status": { "id": "routes/app.bulk-delete-status", "parentId": "routes/app", "path": "bulk-delete-status", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.bulk-delete-status-B9ckFEHG.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-C4L-436O.js"], "css": ["/assets/app-D-OVMHlp.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.create-products": { "id": "routes/app.create-products", "parentId": "routes/app", "path": "create-products", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.create-products-Z4rkL0VS.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-C4L-436O.js"], "css": ["/assets/app-D-OVMHlp.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.update-prices": { "id": "routes/app.update-prices", "parentId": "routes/app", "path": "update-prices", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.update-prices-DfJ2eQ76.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-C4L-436O.js"], "css": ["/assets/app-D-OVMHlp.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.update-stock": { "id": "routes/app.update-stock", "parentId": "routes/app", "path": "update-stock", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.update-stock-C4hPGWZS.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-C4L-436O.js"], "css": ["/assets/app-D-OVMHlp.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.bulk-images": { "id": "routes/app.bulk-images", "parentId": "routes/app", "path": "bulk-images", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.bulk-images-5mLBZ-lv.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js", "/assets/app._index-C4L-436O.js"], "css": ["/assets/app-D-OVMHlp.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.jobs.$jobId": { "id": "routes/app.jobs.$jobId", "parentId": "routes/app", "path": "jobs/:jobId", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": false, "hasErrorBoundary": false, "module": "/assets/app.jobs._jobId-l0sNRNKZ.js", "imports": [], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app.additional": { "id": "routes/app.additional", "parentId": "routes/app", "path": "additional", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app.additional-DNQjhEqh.js", "imports": ["/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js"], "css": [], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 }, "routes/app._index": { "id": "routes/app._index", "parentId": "routes/app", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasClientMiddleware": false, "hasDefaultExport": true, "hasErrorBoundary": false, "module": "/assets/app._index-H0cAcxni.js", "imports": ["/assets/app._index-C4L-436O.js", "/assets/chunk-KS7C4IRE-C0Usnt22.js", "/assets/jsx-runtime-2blBVIOC.js"], "css": ["/assets/app-D-OVMHlp.css"], "clientActionModule": void 0, "clientLoaderModule": void 0, "clientMiddlewareModule": void 0, "hydrateFallbackModule": void 0 } }, "url": "/assets/manifest-b279c7bd.js", "version": "b279c7bd", "sri": void 0 };
 const assetsBuildDirectory = "build/client";
 const basename = "/";
 const future = { "unstable_optimizeDeps": false, "v8_passThroughRequests": false, "v8_trailingSlashAwareDataRequests": false, "unstable_previewServerPrerendering": false, "v8_middleware": false, "v8_splitRouteModules": false, "v8_viteEnvironmentApi": false };

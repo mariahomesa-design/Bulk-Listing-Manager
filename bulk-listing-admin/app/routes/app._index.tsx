@@ -9,7 +9,11 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
-import { createBulkJob } from "../models/bulk-jobs.server";
+import {
+  createBulkJob,
+  getRecentBulkJobs,
+  recordFailedBulkJob,
+} from "../models/bulk-jobs.server";
 import {
   getBulkManagerData,
   normalizeImageRows,
@@ -90,16 +94,37 @@ type UpdateHistoryFile = {
 type BulkJobStatus = {
   id: string;
   intent: string;
+  fileName?: string | null;
+  uploadedBy?: string | null;
   status: "queued" | "running" | "completed" | "failed" | string;
   progress: number;
   totalRows: number;
   processedRows: number;
+  successRows?: number;
+  failedRows?: number;
   message?: string | null;
   result?: unknown;
   error?: string | null;
   createdAt?: string;
   startedAt?: string | null;
   completedAt?: string | null;
+};
+
+type ActivityLogEntry = {
+  id: string;
+  intent: string;
+  fileName?: string | null;
+  uploadedBy?: string | null;
+  status: string;
+  totalRows: number;
+  processedRows: number;
+  successRows: number;
+  failedRows: number;
+  message?: string | null;
+  error?: string | null;
+  createdAt: string | Date;
+  startedAt?: string | Date | null;
+  completedAt?: string | Date | null;
 };
 
 function escapeSpreadsheetXml(value: unknown) {
@@ -277,6 +302,24 @@ async function getRowsFromUpload<T>(
   return parseJsonRows<T>(formData.get(fallbackField));
 }
 
+function uploadedFileName(formData: FormData, fileFields: string[]) {
+  for (const field of fileFields) {
+    const value = formData.get(field);
+
+    if (
+      value &&
+      typeof value === "object" &&
+      "name" in value &&
+      typeof value.name === "string" &&
+      value.name.trim()
+    ) {
+      return value.name.trim();
+    }
+  }
+
+  return undefined;
+}
+
 function TemplateUpload({
   template,
   fileName,
@@ -395,21 +438,39 @@ function ToolCard({
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  const [managerData, activityLog] = await Promise.all([
+    getBulkManagerData(admin),
+    getRecentBulkJobs(session.shop, undefined, 12),
+  ]);
 
-  return getBulkManagerData(admin);
+  return { ...managerData, activityLog };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
+  const sessionUser = session as typeof session & {
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+  };
+  const uploadedBy =
+    [sessionUser.firstName, sessionUser.lastName].filter(Boolean).join(" ") ||
+    sessionUser.email ||
+    session.shop;
 
-  async function enqueue(payload: Record<string, unknown>) {
+  async function enqueue(
+    payload: Record<string, unknown>,
+    fileFields: string[] = [],
+  ) {
     const job = await createBulkJob({
       shop: session.shop,
       intent,
       payload,
+      uploadedBy,
+      fileName: uploadedFileName(formData, fileFields),
     });
 
     return {
@@ -421,6 +482,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         progress: job.progress,
         totalRows: job.totalRows,
         processedRows: job.processedRows,
+        successRows: job.successRows,
+        failedRows: job.failedRows,
+        fileName: job.fileName,
+        uploadedBy: job.uploadedBy,
         message: job.message,
       },
     };
@@ -439,7 +504,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return enqueue({
         rows,
         locationId: String(formData.get("locationId") || ""),
-      });
+      }, ["productsFile"]);
     }
 
     if (intent === "update-status") {
@@ -470,15 +535,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           {},
         );
 
-        return enqueue({
-          statusGroups,
-          rows: uploadedRows,
-        });
+        return enqueue(
+          {
+            statusGroups,
+            rows: uploadedRows,
+          },
+          ["productIdsFile"],
+        );
       }
 
       const productIds = parseJsonRows<string>(formData.get("productIds"));
 
-      return enqueue({ productIds, status });
+      return enqueue({ productIds, status }, ["productIdsFile"]);
     }
 
     if (intent === "update-prices") {
@@ -489,7 +557,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           "variants",
         ),
       );
-      return enqueue({ rows });
+      return enqueue({ rows }, ["variantsFile"]);
     }
 
     if (intent === "bulk-delete") {
@@ -507,7 +575,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         );
       }
 
-      return enqueue({ rows });
+      return enqueue({ rows }, ["productActionsFile"]);
     }
 
     if (intent === "bulk-images") {
@@ -519,7 +587,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
 
-      return enqueue({ rows });
+      return enqueue({ rows }, ["imagesFile"]);
     }
 
     if (intent === "update-stock") {
@@ -532,7 +600,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
       const locationId = String(formData.get("locationId") || "");
 
-      return enqueue({ rows, locationId });
+      return enqueue({ rows, locationId }, ["variantsFile"]);
     }
 
     if (intent === "add-to-collection") {
@@ -544,14 +612,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ? normalizeStringArrayRows(uploadedRows)
           : parseJsonRows<string>(formData.get("productIds"));
       const collectionId = String(formData.get("collectionId") || "");
-      return enqueue({ collectionId, productIds });
+      return enqueue({ collectionId, productIds }, ["productIdsFile"]);
     }
 
     return { intent, error: "Unknown bulk action." };
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Bulk action failed.";
+
+    if (intent) {
+      await recordFailedBulkJob({
+        shop: session.shop,
+        intent,
+        uploadedBy,
+        fileName: uploadedFileName(formData, [
+          "productsFile",
+          "productIdsFile",
+          "variantsFile",
+          "productActionsFile",
+          "imagesFile",
+        ]),
+        error: message,
+      });
+    }
+
     return {
       intent,
-      error: error instanceof Error ? error.message : "Bulk action failed.",
+      error: message,
     };
   }
 };
@@ -600,6 +687,95 @@ const viewContent: Record<
   },
 };
 
+const intentLabels: Record<string, string> = {
+  "create-products": "Create products",
+  "bulk-delete": "Bulk delete / status",
+  "update-status": "Update status",
+  "update-prices": "Update prices",
+  "update-stock": "Update stock",
+  "bulk-images": "Bulk image update",
+  "add-to-collection": "Add to collection",
+};
+
+const viewIntent: Partial<Record<BulkManagerView, string>> = {
+  "create-products": "create-products",
+  "bulk-delete-status": "bulk-delete",
+  "update-prices": "update-prices",
+  "update-stock": "update-stock",
+  "bulk-images": "bulk-images",
+};
+
+function formatDateTime(value?: string | Date | null) {
+  if (!value) {
+    return "Not finished";
+  }
+
+  return new Date(value).toLocaleString();
+}
+
+function ActivityLog({
+  entries,
+  compact = false,
+}: {
+  entries: ActivityLogEntry[];
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? styles.activityListCompact : styles.activityList}>
+      {entries.length === 0 && (
+        <div className={styles.emptyHistory}>
+          No uploads have been recorded yet.
+        </div>
+      )}
+      {entries.map((entry) => {
+        const failed = entry.status === "failed" || entry.failedRows > 0;
+        const finishedAt = entry.completedAt || entry.startedAt || entry.createdAt;
+
+        return (
+          <div className={styles.activityRow} key={entry.id}>
+            <div className={styles.activityMain}>
+              <div className={styles.activityTitle}>
+                <span>{intentLabels[entry.intent] || entry.intent}</span>
+                <span
+                  className={`${styles.statusBadge} ${
+                    failed ? styles.statusError : styles.statusOk
+                  }`}
+                >
+                  {entry.status}
+                </span>
+              </div>
+              <div className={styles.activityMeta}>
+                {entry.fileName || "JSON/manual input"} by{" "}
+                {entry.uploadedBy || "Unknown user"}
+              </div>
+              <div className={styles.activityMeta}>{formatDateTime(finishedAt)}</div>
+              {(entry.error || entry.message) && (
+                <div className={styles.activityMessage}>
+                  {entry.error || entry.message}
+                </div>
+              )}
+            </div>
+            <div className={styles.activityCounts}>
+              <span>
+                <b>{entry.totalRows.toLocaleString()}</b>
+                Rows
+              </span>
+              <span>
+                <b>{entry.successRows.toLocaleString()}</b>
+                Success
+              </span>
+              <span className={failed ? styles.failedCount : undefined}>
+                <b>{entry.failedRows.toLocaleString()}</b>
+                Failed
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Dashboard({
   products,
   productCount,
@@ -608,6 +784,7 @@ function Dashboard({
   collections,
   collectionCount,
   locations,
+  activityLog,
   shopify,
 }: any) {
   const workflows = [
@@ -729,6 +906,21 @@ function Dashboard({
           <section className={styles.panel}>
             <div className={styles.panelHeaderRow}>
               <div>
+                <div className={styles.panelHeader}>Activity log</div>
+                <div className={styles.panelSubhead}>
+                  Latest uploads and background jobs
+                </div>
+              </div>
+              <span className={styles.countBadge}>{activityLog.length}</span>
+            </div>
+            <div className={styles.panelBody}>
+              <ActivityLog entries={activityLog.slice(0, 6)} compact />
+            </div>
+          </section>
+
+          <section className={styles.panel}>
+            <div className={styles.panelHeaderRow}>
+              <div>
                 <div className={styles.panelHeader}>Recent products</div>
                 <div className={styles.panelSubhead}>Latest catalog activity</div>
               </div>
@@ -773,6 +965,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
     collections,
     collectionCount,
     locations,
+    activityLog = [],
   } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
@@ -991,6 +1184,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
             collections={collections}
             collectionCount={collectionCount}
             locations={locations}
+            activityLog={activityLog}
             shopify={shopify}
           />
         </div>
@@ -999,6 +1193,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
   }
 
   const page = viewContent[view];
+  const activityForView = (activityLog as unknown as ActivityLogEntry[]).filter(
+    (entry) => entry.intent === viewIntent[view],
+  );
 
   return (
     <s-page heading={page.title}>
@@ -1299,6 +1496,21 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                     Clear history
                   </button>
                 )}
+              </div>
+            </section>
+
+            <section className={styles.panel}>
+              <div className={styles.panelHeaderRow}>
+                <div>
+                  <div className={styles.panelHeader}>Activity log</div>
+                  <div className={styles.panelSubhead}>
+                    Who uploaded, when, and row results
+                  </div>
+                </div>
+                <span className={styles.countBadge}>{activityForView.length}</span>
+              </div>
+              <div className={styles.panelBody}>
+                <ActivityLog entries={activityForView.slice(0, 6)} compact />
               </div>
             </section>
           </aside>

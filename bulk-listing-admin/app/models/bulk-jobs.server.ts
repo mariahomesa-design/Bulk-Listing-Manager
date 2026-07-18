@@ -25,25 +25,159 @@ type BulkJobPayload = {
   status?: "ACTIVE" | "DRAFT" | "ARCHIVED";
 };
 
+type RowCounts = {
+  successRows: number;
+  failedRows: number;
+};
+
 const activeJobs = new Set<string>();
 
 function rowCount(payload: BulkJobPayload) {
   return payload.rows?.length || payload.productIds?.length || 0;
 }
 
+function numericValue(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isSuccessfulRow(row: unknown) {
+  if (!row || typeof row !== "object") {
+    return false;
+  }
+
+  const value = row as Record<string, unknown>;
+
+  if (typeof value.success === "boolean") {
+    return value.success;
+  }
+
+  const status = String(value.status || value.Status || "").toLowerCase();
+
+  if (status.includes("error") || status.includes("failed")) {
+    return false;
+  }
+
+  return status.includes("success") || status.includes("warning");
+}
+
+function countBooleanRows(rows: unknown[]): RowCounts {
+  return rows.reduce<RowCounts>(
+    (counts, row) => {
+      if (isSuccessfulRow(row)) {
+        counts.successRows += 1;
+      } else {
+        counts.failedRows += 1;
+      }
+
+      return counts;
+    },
+    { successRows: 0, failedRows: 0 },
+  );
+}
+
+function summarizeJobResult(
+  totalRows: number,
+  result: unknown,
+  error?: string,
+): RowCounts {
+  if (error) {
+    return { successRows: 0, failedRows: totalRows };
+  }
+
+  if (!result || typeof result !== "object") {
+    return { successRows: totalRows, failedRows: 0 };
+  }
+
+  const value = result as Record<string, any>;
+
+  if (Array.isArray(value.reportRows)) {
+    return value.reportRows.reduce(
+      (counts: { successRows: number; failedRows: number }, row: any) => {
+        const status = String(row.status || "").toLowerCase();
+
+        if (status === "success" || status === "warning") {
+          counts.successRows += 1;
+        } else {
+          counts.failedRows += 1;
+        }
+
+        return counts;
+      },
+      { successRows: 0, failedRows: 0 },
+    );
+  }
+
+  if (value.stock || value.statuses) {
+    const stockSuccess = Math.max(
+      0,
+      numericValue(value.stock?.updatedRows) - numericValue(value.stock?.failedRows),
+    );
+    const stockFailed = numericValue(value.stock?.failedRows);
+    const statusCounts: RowCounts = Array.isArray(value.statuses)
+      ? countBooleanRows(value.statuses.flat())
+      : { successRows: 0, failedRows: 0 };
+
+    return {
+      successRows: stockSuccess + statusCounts.successRows,
+      failedRows: stockFailed + statusCounts.failedRows,
+    };
+  }
+
+  if (value.summary) {
+    const summary = value.summary as Record<string, unknown>;
+    const successRows =
+      numericValue(summary.success) ||
+      numericValue(summary.variants) ||
+      numericValue(summary.products);
+    const failedRows =
+      numericValue(summary.error) ||
+      numericValue(summary.errors) ||
+      numericValue(summary.failed);
+
+    return { successRows, failedRows };
+  }
+
+  if (Array.isArray(value.rows)) {
+    return countBooleanRows(value.rows);
+  }
+
+  if (Array.isArray(result)) {
+    return countBooleanRows(result.flat());
+  }
+
+  if (Array.isArray(value.errors) && value.errors.length > 0) {
+    const failedRows = value.errors.reduce(
+      (count: number, row: Record<string, unknown>) =>
+        count + numericValue(row.rows || row.variants || 1),
+      0,
+    );
+
+    return { successRows: Math.max(0, totalRows - failedRows), failedRows };
+  }
+
+  return { successRows: totalRows, failedRows: 0 };
+}
+
 export async function createBulkJob({
   shop,
   intent,
   payload,
+  fileName,
+  uploadedBy,
 }: {
   shop: string;
   intent: string;
   payload: BulkJobPayload;
+  fileName?: string;
+  uploadedBy?: string;
 }) {
   const job = await prisma.bulkJob.create({
     data: {
       shop,
       intent,
+      fileName,
+      uploadedBy,
       payload: JSON.parse(JSON.stringify(payload)) as Prisma.InputJsonValue,
       totalRows: rowCount(payload),
       message: "Waiting to start.",
@@ -53,6 +187,66 @@ export async function createBulkJob({
   startBulkJob(job.id);
 
   return job;
+}
+
+export async function recordFailedBulkJob({
+  shop,
+  intent,
+  fileName,
+  uploadedBy,
+  error,
+}: {
+  shop: string;
+  intent: string;
+  fileName?: string;
+  uploadedBy?: string;
+  error: string;
+}) {
+  return prisma.bulkJob.create({
+    data: {
+      shop,
+      intent,
+      fileName,
+      uploadedBy,
+      status: "failed",
+      progress: 100,
+      totalRows: 0,
+      processedRows: 0,
+      successRows: 0,
+      failedRows: 0,
+      payload: {},
+      error,
+      message: "Failed before processing.",
+      completedAt: new Date(),
+    },
+  });
+}
+
+export async function getRecentBulkJobs(shop: string, intent?: string, take = 10) {
+  return prisma.bulkJob.findMany({
+    where: {
+      shop,
+      ...(intent ? { intent } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    take,
+    select: {
+      id: true,
+      intent: true,
+      fileName: true,
+      uploadedBy: true,
+      status: true,
+      totalRows: true,
+      processedRows: true,
+      successRows: true,
+      failedRows: true,
+      message: true,
+      error: true,
+      createdAt: true,
+      startedAt: true,
+      completedAt: true,
+    },
+  });
 }
 
 export async function getBulkJob(shop: string, id: string) {
@@ -121,6 +315,7 @@ async function processBulkJob(id: string) {
       progress,
       message,
     ) => updateJobProgress(id, progress, message));
+    const counts = summarizeJobResult(job.totalRows, result);
 
     await prisma.bulkJob.update({
       where: { id },
@@ -128,18 +323,26 @@ async function processBulkJob(id: string) {
         status: "completed",
         progress: 100,
         processedRows: job.totalRows,
+        successRows: counts.successRows,
+        failedRows: counts.failedRows,
         result: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
         completedAt: new Date(),
         message: "Completed.",
       },
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Bulk job failed.";
+    const counts = summarizeJobResult(job.totalRows, null, message);
+
     await prisma.bulkJob.update({
       where: { id },
       data: {
         status: "failed",
         progress: 100,
-        error: error instanceof Error ? error.message : "Bulk job failed.",
+        processedRows: 0,
+        successRows: counts.successRows,
+        failedRows: counts.failedRows,
+        error: message,
         completedAt: new Date(),
         message: "Failed.",
       },

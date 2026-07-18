@@ -579,6 +579,103 @@
   background: #ffffff;
 }
 
+.activityList,
+.activityListCompact {
+  display: grid;
+  gap: 10px;
+}
+
+.activityRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 11px;
+  border: 1px solid #edf0f2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.activityListCompact .activityRow {
+  grid-template-columns: 1fr;
+}
+
+.activityMain {
+  min-width: 0;
+}
+
+.activityTitle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: #202223;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.statusBadge {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.statusOk {
+  color: #0b6b4d;
+  background: #e0f1e9;
+}
+
+.statusError {
+  color: #9f2515;
+  background: #ffe6e2;
+}
+
+.activityMeta,
+.activityMessage {
+  margin-top: 4px;
+  color: #616161;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.activityMessage {
+  color: #4f5a55;
+}
+
+.activityCounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(62px, auto));
+  gap: 6px;
+}
+
+.activityListCompact .activityCounts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.activityCounts span {
+  display: grid;
+  gap: 2px;
+  min-width: 62px;
+  padding: 7px;
+  border: 1px solid #edf0f2;
+  border-radius: 6px;
+  color: #6d7175;
+  background: #fafbfb;
+  font-size: 11px;
+}
+
+.activityCounts b {
+  color: #202223;
+  font-size: 14px;
+}
+
+.activityCounts .failedCount b {
+  color: #b42318;
+}
+
 .emptyHistory {
   padding: 14px;
   border: 1px dashed #c9d0d6;
