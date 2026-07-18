@@ -169,7 +169,9 @@ function decimalStringValue(value: string) {
   }
 
   if (!/^\d+(\.\d+)?$/.test(normalized)) {
-    throw new Error(`Invalid decimal value "${value}". Use numbers like 10 or 10.50.`);
+    throw new Error(
+      `Invalid decimal value "${value}". Use numbers like 10 or 10.50.`,
+    );
   }
 
   return normalized;
@@ -218,7 +220,9 @@ function productActionValue(
     return "DELETE";
   }
 
-  if (["ACTIVE", "DRAFT", "ARCHIVED", "UNLIST", "UNLISTED"].includes(normalized)) {
+  if (
+    ["ACTIVE", "DRAFT", "ARCHIVED", "UNLIST", "UNLISTED"].includes(normalized)
+  ) {
     return statusValue(normalized);
   }
 
@@ -315,10 +319,15 @@ export function normalizeStockRows(
       return {
         productId: rowValue(raw, ["Product ID", "productId"]),
         variantId: rowValue(raw, ["variantId"]),
-        inventoryItemId: rowValue(raw, ["Inventory item ID", "inventoryItemId"]),
+        inventoryItemId: rowValue(raw, [
+          "Inventory item ID",
+          "inventoryItemId",
+        ]),
         sku: rowValue(raw, ["SKU", "sku"]),
         barcode: rowValue(raw, ["Barcode", "barcode"]),
-        quantity: numberValue(rowValue(raw, ["New stock", "Stock", "quantity"])),
+        quantity: numberValue(
+          rowValue(raw, ["New stock", "Stock", "quantity"]),
+        ),
         productStatus: optionalStatusValue(rowValue(raw, ["Status", "status"])),
       };
     })
@@ -351,7 +360,10 @@ export function normalizePriceRows(
         ),
       };
     })
-    .filter((row) => row.productId && row.variantId && (row.price || row.compareAtPrice));
+    .filter(
+      (row) =>
+        row.productId && row.variantId && (row.price || row.compareAtPrice),
+    );
 }
 
 export function normalizeProductActionRows(
@@ -369,7 +381,9 @@ export function normalizeProductActionRows(
         productId: rowValue(raw, ["Product ID", "productId"]),
         barcode: rowValue(raw, ["Barcode", "barcode"]),
         title: rowValue(raw, ["Title", "Product title", "title"]),
-        action: productActionValue(rowValue(raw, ["Action", "Status", "status"])),
+        action: productActionValue(
+          rowValue(raw, ["Action", "Status", "status"]),
+        ),
       };
     })
     .filter((row) => (row.productId || row.barcode || row.title) && row.action);
@@ -883,7 +897,11 @@ async function getPublicationIds(admin: GraphqlClient) {
     const json = await response.json();
 
     if (json.errors?.length) {
-      throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+      throw new Error(
+        json.errors
+          .map((error: { message: string }) => error.message)
+          .join(", "),
+      );
     }
 
     publicationIds.push(
@@ -931,7 +949,9 @@ async function publishProductToPublications(
   const json = await response.json();
 
   if (json.errors?.length) {
-    throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+    throw new Error(
+      json.errors.map((error: { message: string }) => error.message).join(", "),
+    );
   }
 
   const errors = json.data?.publishablePublish?.userErrors || [];
@@ -1097,7 +1117,9 @@ async function findExistingVariantByBarcode(
   const json = await response.json();
 
   if (json.errors?.length) {
-    throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+    throw new Error(
+      json.errors.map((error: { message: string }) => error.message).join(", "),
+    );
   }
 
   return json.data?.productVariants?.edges?.[0]?.node;
@@ -1149,7 +1171,9 @@ function variationOptionValues(source: VariationSource, optionNames: string[]) {
   const rowOptions = normalizedVariationOptions(source.row);
 
   return optionNames.map((optionName) => {
-    const option = rowOptions.find((rowOption) => rowOption.name === optionName);
+    const option = rowOptions.find(
+      (rowOption) => rowOption.name === optionName,
+    );
 
     return {
       name: option?.value || source.row.barcode,
@@ -1158,8 +1182,14 @@ function variationOptionValues(source: VariationSource, optionNames: string[]) {
   });
 }
 
-function variationReportFields(parentSku: string, barcode: string, rows: VariationRow[]) {
-  const row = rows.find((variationRow) => variationRow.barcode.trim() === barcode);
+function variationReportFields(
+  parentSku: string,
+  barcode: string,
+  rows: VariationRow[],
+) {
+  const row = rows.find(
+    (variationRow) => variationRow.barcode.trim() === barcode,
+  );
 
   return {
     parentSku,
@@ -1171,24 +1201,27 @@ function variationReportFields(parentSku: string, barcode: string, rows: Variati
   };
 }
 
-async function createVariationProduct(
+async function ensureVariationOptions(
   admin: GraphqlClient,
-  parentSku: string,
+  productId: string,
   sources: VariationSource[],
 ) {
-  const firstVariant = sources[0]?.variant;
-  const firstProduct = firstVariant?.product || {};
   const optionNames = variationOptionNames(sources);
-  const mediaSrc = sources
-    .map((source) => source.variant.product?.featuredMedia?.preview?.image?.url || "")
-    .filter(Boolean);
-  const productResponse = await admin.graphql(
+
+  const response = await admin.graphql(
     `#graphql
-      mutation BulkVariationProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
-        productCreate(product: $product, media: $media) {
+      mutation BulkListingVariationOptionsCreate(
+        $productId: ID!,
+        $options: [OptionCreateInput!]!,
+        $variantStrategy: ProductOptionCreateVariantStrategy
+      ) {
+        productOptionsCreate(
+          productId: $productId,
+          options: $options,
+          variantStrategy: $variantStrategy
+        ) {
           product {
             id
-            title
           }
           userErrors {
             field
@@ -1198,61 +1231,67 @@ async function createVariationProduct(
       }`,
     {
       variables: {
-        product: {
-          title: parentSku,
-          descriptionHtml: firstProduct.descriptionHtml || undefined,
-          vendor: firstProduct.vendor || undefined,
-          productType: firstProduct.productType || undefined,
-          category: firstProduct.category?.id || undefined,
-          status: "DRAFT",
-          productOptions: optionNames.map((optionName) => {
-            const values = sources.map((source) => {
-              const option = normalizedVariationOptions(source.row).find(
-                (rowOption) => rowOption.name === optionName,
-              );
+        productId,
+        options: optionNames.map((optionName) => {
+          const values = sources.map((source) => {
+            const option = normalizedVariationOptions(source.row).find(
+              (rowOption) => rowOption.name === optionName,
+            );
 
-              return option?.value || source.row.barcode;
-            });
+            return option?.value || source.row.barcode;
+          });
 
-            return {
-              name: optionName,
-              values: Array.from(new Set(values)).map((name) => ({ name })),
-            };
-          }),
-        },
-        media: mediaSrc.length
-          ? Array.from(new Set(mediaSrc)).map((url) => ({
-              mediaContentType: "IMAGE",
-              originalSource: url,
-            }))
-          : undefined,
+          return {
+            name: optionName,
+            values: Array.from(new Set(values)).map((name) => ({ name })),
+          };
+        }),
+        variantStrategy: "LEAVE_AS_IS",
       },
     },
   );
-  const productJson = await productResponse.json();
+  const json = await response.json();
 
-  if (productJson.errors?.length) {
-    throw new Error(graphqlErrorMessage(productJson.errors));
+  if (json.errors?.length) {
+    throw new Error(graphqlErrorMessage(json.errors));
   }
 
-  const productCreate = productJson.data?.productCreate;
-  const productErrors = productCreate?.userErrors || [];
+  const result = json.data?.productOptionsCreate;
+  const userErrors = result?.userErrors || [];
 
-  if (productErrors.length) {
-    throw new Error(productErrors.map((error: any) => error.message).join("; "));
+  if (userErrors.length) {
+    throw new Error(userErrors.map((error: any) => error.message).join("; "));
   }
 
-  const productId = productCreate?.product?.id;
+  return optionNames;
+}
 
-  if (!productId) {
-    throw new Error("Shopify did not return a parent variation product.");
+async function createVariationsOnExistingProduct(
+  admin: GraphqlClient,
+  parentProductId: string,
+  sources: VariationSource[],
+) {
+  const optionNames = await ensureVariationOptions(
+    admin,
+    parentProductId,
+    sources,
+  );
+  const childSources = sources.slice(1);
+
+  if (!childSources.length) {
+    return {
+      productId: parentProductId,
+      variantsCreated: 0,
+    };
   }
 
-  const variants = sources.map((source) => {
+  const variants = childSources.map((source) => {
     const variant = source.variant;
     const inventoryItem = compactObject({
-      sku: variant.sku || `${parentSku}-${variant.barcode}`,
-      cost: decimalStringValue(String(variant.inventoryItem?.unitCost?.amount || "")),
+      sku: variant.sku || variant.barcode,
+      cost: decimalStringValue(
+        String(variant.inventoryItem?.unitCost?.amount || ""),
+      ),
       tracked: variant.inventoryItem?.tracked,
     });
 
@@ -1273,11 +1312,7 @@ async function createVariationProduct(
   const variantsResponse = await admin.graphql(
     `#graphql
       mutation BulkVariationVariantsCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-        productVariantsBulkCreate(
-          productId: $productId,
-          variants: $variants,
-          strategy: REMOVE_STANDALONE_VARIANT
-        ) {
+        productVariantsBulkCreate(productId: $productId, variants: $variants) {
           product {
             id
           }
@@ -1294,7 +1329,7 @@ async function createVariationProduct(
       }`,
     {
       variables: {
-        productId,
+        productId: parentProductId,
         variants,
       },
     },
@@ -1309,11 +1344,13 @@ async function createVariationProduct(
   const variantErrors = variantsCreate?.userErrors || [];
 
   if (variantErrors.length) {
-    throw new Error(variantErrors.map((error: any) => error.message).join("; "));
+    throw new Error(
+      variantErrors.map((error: any) => error.message).join("; "),
+    );
   }
 
   return {
-    productId,
+    productId: parentProductId,
     variantsCreated: variantsCreate?.productVariants?.length || variants.length,
   };
 }
@@ -1360,7 +1397,9 @@ export async function createBulkVariations(
     const missingBarcodes = [];
 
     for (const barcode of uniqueBarcodes) {
-      const row = groupRows.find((variationRow) => variationRow.barcode.trim() === barcode);
+      const row = groupRows.find(
+        (variationRow) => variationRow.barcode.trim() === barcode,
+      );
       const variant = await findExistingVariantByBarcode(admin, barcode);
 
       if (!variant?.id) {
@@ -1375,7 +1414,8 @@ export async function createBulkVariations(
         reportRows.push({
           ...variationReportFields(parentSku, barcode, groupRows),
           status: "Error",
-          message: "Could not find an existing Shopify variant for this barcode.",
+          message:
+            "Could not find an existing Shopify variant for this barcode.",
           productId: "",
         }),
       );
@@ -1383,13 +1423,43 @@ export async function createBulkVariations(
     }
 
     try {
-      const result = await createVariationProduct(admin, parentSku, sourceVariants);
+      const parentSource = sourceVariants[0];
+      const parentProductId = parentSource?.variant?.product?.id || "";
 
-      uniqueBarcodes.forEach((barcode) =>
+      if (!parentProductId) {
+        throw new Error(
+          "Could not find an existing parent listing for the first barcode.",
+        );
+      }
+
+      const result = await createVariationsOnExistingProduct(
+        admin,
+        parentProductId,
+        sourceVariants,
+      );
+      const childProductIds = sourceVariants
+        .slice(1)
+        .map((source) => source.variant?.product?.id || "")
+        .filter((productId) => productId && productId !== parentProductId);
+      const deleted = await deleteProducts(admin, childProductIds);
+      const deleteErrors = deleted.filter((row) => !row.success);
+
+      if (deleteErrors.length) {
+        throw new Error(
+          `Variants were created, but ${deleteErrors.length} old listing(s) could not be deleted: ${deleteErrors
+            .map((row) => row.message)
+            .join("; ")}`,
+        );
+      }
+
+      uniqueBarcodes.forEach((barcode, index) =>
         reportRows.push({
           ...variationReportFields(parentSku, barcode, groupRows),
           status: "Success",
-          message: `Created under parent SKU ${parentSku}. Original listing was not deleted.`,
+          message:
+            index === 0
+              ? "Parent listing kept. Variations were created under this existing product."
+              : "Variation created under the parent listing. Old separate listing was deleted.",
           productId: result.productId,
         }),
       );
@@ -1474,7 +1544,9 @@ async function resolveProductIdFromTitle(
   const json = await response.json();
 
   if (json.errors?.length) {
-    throw new Error(json.errors.map((error: { message: string }) => error.message).join(", "));
+    throw new Error(
+      json.errors.map((error: { message: string }) => error.message).join(", "),
+    );
   }
 
   const matches =
@@ -1520,10 +1592,7 @@ export async function resolveStatusRowsProductIds(
   return resolved;
 }
 
-async function getExistingBarcodes(
-  admin: GraphqlClient,
-  rows: ProductRow[],
-) {
+async function getExistingBarcodes(admin: GraphqlClient, rows: ProductRow[]) {
   const barcodes = Array.from(
     new Set(rows.map((row) => row.barcode?.trim()).filter(Boolean)),
   ) as string[];
@@ -1653,7 +1722,9 @@ export async function createProducts(
               category: row.category || undefined,
               productType: row.productType || undefined,
               status,
-              productOptions: productOptions.length ? productOptions : undefined,
+              productOptions: productOptions.length
+                ? productOptions
+                : undefined,
             },
             media: media.length ? media : undefined,
           },
@@ -1687,7 +1758,9 @@ export async function createProducts(
       reportRows.push({
         ...reportBase,
         status: "Error",
-        message: errors.map((error: { message: string }) => error.message).join("; "),
+        message: errors
+          .map((error: { message: string }) => error.message)
+          .join("; "),
         productId: "",
       });
       continue;
@@ -1801,7 +1874,9 @@ export async function updateProductImages(
   rows: ProductImageRow[],
 ) {
   if (!rows.length) {
-    throw new Error("Add at least one URL in the New image columns before uploading.");
+    throw new Error(
+      "Add at least one URL in the New image columns before uploading.",
+    );
   }
 
   const grouped = new Map<string, ProductImageRow>();
@@ -1992,13 +2067,17 @@ export async function updateProductStatuses(
         productId: id,
         action: status,
         success: false,
-        message: error instanceof Error ? error.message : "Status update failed.",
+        message:
+          error instanceof Error ? error.message : "Status update failed.",
       };
     }
   });
 }
 
-export async function deleteProducts(admin: GraphqlClient, productIds: string[]) {
+export async function deleteProducts(
+  admin: GraphqlClient,
+  productIds: string[],
+) {
   return mapWithConcurrency(Array.from(new Set(productIds)), 4, async (id) => {
     try {
       const response = await admin.graphql(
@@ -2081,7 +2160,8 @@ export async function applyProductActions(
         productId: "",
         action: row.action || "",
         success: false,
-        message: "Could not find one exact Shopify product for this barcode or title.",
+        message:
+          "Could not find one exact Shopify product for this barcode or title.",
       });
       continue;
     }
@@ -2159,7 +2239,9 @@ async function mapWithConcurrency<T, R>(
   }
 
   await Promise.all(
-    Array.from({ length: Math.min(concurrency, values.length) }, () => worker()),
+    Array.from({ length: Math.min(concurrency, values.length) }, () =>
+      worker(),
+    ),
   );
 
   return results;
@@ -2170,7 +2252,9 @@ export async function updateVariantPrices(
   rows: VariantUpdateRow[],
 ) {
   if (!rows.length) {
-    throw new Error("Add values in New price or New compare price before uploading.");
+    throw new Error(
+      "Add values in New price or New compare price before uploading.",
+    );
   }
 
   const byProduct = rows.reduce<Record<string, VariantUpdateRow[]>>(
@@ -2287,7 +2371,9 @@ export async function updateInventoryQuantities(
   }
 
   if (!rows.some((row) => row.inventoryItemId && row.quantity !== undefined)) {
-    throw new Error("Add stock values in the New stock column before uploading.");
+    throw new Error(
+      "Add stock values in the New stock column before uploading.",
+    );
   }
 
   const quantities = rows

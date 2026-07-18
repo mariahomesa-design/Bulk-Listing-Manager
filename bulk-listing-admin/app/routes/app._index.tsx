@@ -187,7 +187,9 @@ function getResultRows(data: any): Record<string, unknown>[] {
     if (result.stock) {
       rows.push({
         Operation: "Stock",
-        Status: result.stock.errors?.length ? "Completed with errors" : "Success",
+        Status: result.stock.errors?.length
+          ? "Completed with errors"
+          : "Success",
         "Updated rows": result.stock.updatedRows ?? "",
         "Failed rows": result.stock.failedRows ?? 0,
         Batches: result.stock.batches ?? "",
@@ -231,7 +233,9 @@ function getResultStatus(rows: Record<string, unknown>[], data: any) {
   }
 
   return rows.some((row) => {
-    const values = Object.values(row).map((value) => String(value).toLowerCase());
+    const values = Object.values(row).map((value) =>
+      String(value).toLowerCase(),
+    );
     return values.includes("error") || values.includes("false");
   })
     ? "error"
@@ -362,7 +366,9 @@ function TemplateUpload({
       }
 
       if (contentType.includes("text/html")) {
-        throw new Error("Shopify session refreshed. Reload the app and try again.");
+        throw new Error(
+          "Shopify session refreshed. Reload the app and try again.",
+        );
       }
 
       const blob = await response.blob();
@@ -504,10 +510,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
 
-      return enqueue({
-        rows,
-        locationId: String(formData.get("locationId") || ""),
-      }, ["productsFile"]);
+      return enqueue(
+        {
+          rows,
+          locationId: String(formData.get("locationId") || ""),
+        },
+        ["productsFile"],
+      );
     }
 
     if (intent === "update-status") {
@@ -515,9 +524,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         formData.get("productIdsFile"),
       );
       const status = String(formData.get("status")) as
-        | "ACTIVE"
-        | "DRAFT"
-        | "ARCHIVED";
+        "ACTIVE" | "DRAFT" | "ARCHIVED";
 
       if (uploadedRows.length > 0) {
         const statusGroups = uploadedRows.reduce<Record<string, string[]>>(
@@ -706,7 +713,7 @@ const viewContent: Record<
     eyebrow: "Variant operations",
     title: "Bulk Variation manager",
     description:
-      "Group existing barcodes under a shared Parent SKU and create a new Shopify product with those barcodes as variants.",
+      "Group existing barcodes under a shared Parent SKU and merge them into one existing Shopify listing as variants.",
   },
 };
 
@@ -754,7 +761,8 @@ function ActivityLog({
       )}
       {entries.map((entry) => {
         const failed = entry.status === "failed" || entry.failedRows > 0;
-        const finishedAt = entry.completedAt || entry.startedAt || entry.createdAt;
+        const finishedAt =
+          entry.completedAt || entry.startedAt || entry.createdAt;
 
         return (
           <div className={styles.activityRow} key={entry.id}>
@@ -773,7 +781,9 @@ function ActivityLog({
                 {entry.fileName || "JSON/manual input"} by{" "}
                 {entry.uploadedBy || "Unknown user"}
               </div>
-              <div className={styles.activityMeta}>{formatDateTime(finishedAt)}</div>
+              <div className={styles.activityMeta}>
+                {formatDateTime(finishedAt)}
+              </div>
               {(entry.error || entry.message) && (
                 <div className={styles.activityMessage}>
                   {entry.error || entry.message}
@@ -850,7 +860,7 @@ function Dashboard({
     {
       number: "06",
       title: "Bulk Variation manager",
-      text: "Group 2 to 20 existing barcodes under one Parent SKU as a new variation product.",
+      text: "Use the first barcode as the parent listing and merge the rest as variants.",
       href: "/app/bulk-variations",
       tone: "green",
     },
@@ -890,7 +900,9 @@ function Dashboard({
         </div>
         <div className={styles.metricCard}>
           <span className={styles.metricCaption}>Collections</span>
-          <strong>{(collectionCount ?? collections.length).toLocaleString()}</strong>
+          <strong>
+            {(collectionCount ?? collections.length).toLocaleString()}
+          </strong>
           <span>Available groups</span>
         </div>
         <div className={styles.metricCard}>
@@ -954,7 +966,11 @@ function Dashboard({
   );
 }
 
-export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView }) {
+export function BulkProducts({
+  view = "dashboard",
+}: {
+  view?: BulkManagerView;
+}) {
   const {
     products,
     productCount,
@@ -964,8 +980,7 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
     collectionCount,
     locations,
     activityLog = [],
-  } =
-    useLoaderData<typeof loader>();
+  } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const isSubmitting = fetcher.state !== "idle";
@@ -983,7 +998,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
     }
 
     try {
-      setHistoryFiles(JSON.parse(window.localStorage.getItem(historyKey) || "[]"));
+      setHistoryFiles(
+        JSON.parse(window.localStorage.getItem(historyKey) || "[]"),
+      );
     } catch {
       setHistoryFiles([]);
     }
@@ -1037,7 +1054,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
 
     const loadJob = async () => {
       try {
-        const token = await (shopify as unknown as { idToken?: () => Promise<string> }).idToken?.();
+        const token = await (
+          shopify as unknown as { idToken?: () => Promise<string> }
+        ).idToken?.();
         const response = await fetch(`/app/jobs/${activeJobId}`, {
           credentials: "include",
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -1096,7 +1115,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
     const file: UpdateHistoryFile = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       intent: String(fetcher.data.intent || view),
-      label: viewContent[view]?.title || String(fetcher.data.intent || "Bulk action"),
+      label:
+        viewContent[view]?.title ||
+        String(fetcher.data.intent || "Bulk action"),
       status: getResultStatus(rows, fetcher.data),
       createdAt: new Date().toISOString(),
       rows,
@@ -1148,10 +1169,10 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
     };
 
     setHistoryFiles((current) => {
-      const next = [file, ...current.filter((item) => item.id !== file.id)].slice(
-        0,
-        6,
-      );
+      const next = [
+        file,
+        ...current.filter((item) => item.id !== file.id),
+      ].slice(0, 6);
 
       try {
         window.localStorage.setItem(historyKey, JSON.stringify(next));
@@ -1199,272 +1220,299 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
       <div className={styles.shell}>
         <div className={styles.toolPageHeader}>
           <div className={styles.titleBlock}>
-            <Link className={styles.backLink} to="/app">&larr; Dashboard</Link>
+            <Link className={styles.backLink} to="/app">
+              &larr; Dashboard
+            </Link>
             <div className={styles.eyebrow}>{page.eyebrow}</div>
             <h1 className={styles.title}>{page.title}</h1>
             <p className={styles.subtitle}>{page.description}</p>
           </div>
           <div className={styles.stepStrip}>
-            <span><b>1</b> Download</span>
-            <span><b>2</b> Edit Excel</span>
-            <span><b>3</b> Upload &amp; apply</span>
+            <span>
+              <b>1</b> Download
+            </span>
+            <span>
+              <b>2</b> Edit Excel
+            </span>
+            <span>
+              <b>3</b> Upload &amp; apply
+            </span>
           </div>
         </div>
 
         <div className={styles.layout}>
           <div className={styles.toolGrid}>
-            {view === "create-products" && <ToolCard
-              id="create-products"
-              title="Create products"
-              badges={["products", "price", "SKU", "initial stock"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="create-products" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload
-                    template="create-products"
-                    fileName="productsFile"
-                  />
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor="createLocation">
-                      Initial inventory location
-                    </label>
-                    <select
-                      className={styles.select}
-                      id="createLocation"
-                      name="locationId"
-                      disabled={!hasLocations}
-                    >
-                      {locations.map((location: any) => (
-                        <option key={location.id} value={location.id}>
-                          {location.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {!hasLocations && (
-                    <div className={styles.warning}>
-                      Inventory locations are unavailable until Shopify grants
-                      the location scope.
+            {view === "create-products" && (
+              <ToolCard
+                id="create-products"
+                title="Create products"
+                badges={["products", "price", "SKU", "initial stock"]}
+              >
+                <fetcher.Form method="post" encType="multipart/form-data">
+                  <input type="hidden" name="intent" value="create-products" />
+                  <div className={styles.toolBody}>
+                    <TemplateUpload
+                      template="create-products"
+                      fileName="productsFile"
+                    />
+                    <div className={styles.field}>
+                      <label className={styles.label} htmlFor="createLocation">
+                        Initial inventory location
+                      </label>
+                      <select
+                        className={styles.select}
+                        id="createLocation"
+                        name="locationId"
+                        disabled={!hasLocations}
+                      >
+                        {locations.map((location: any) => (
+                          <option key={location.id} value={location.id}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                  )}
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="products"
-                      defaultValue={sampleProducts}
-                    />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Create products
-                    </button>
-                  </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>}
-
-            {view === "bulk-delete-status" && <ToolCard
-              id="bulk-delete-status"
-              title="Bulk delete / status"
-              badges={["barcode", "active", "draft", "delete"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="bulk-delete" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload
-                    template="bulk-delete"
-                    fileName="productActionsFile"
-                  />
-                  <div className={styles.warning}>
-                    Only rows with an Action selected will be changed. Delete
-                    permanently removes those products from Shopify.
-                  </div>
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="productActions"
-                      defaultValue="[]"
-                    />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Apply actions
-                    </button>
-                  </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>}
-
-            {view === "update-prices" && <ToolCard
-              id="update-prices"
-              title="Update prices"
-              badges={["variants", "price", "SKU"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="update-prices" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload
-                    template="update-prices"
-                    fileName="variantsFile"
-                  />
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="variants"
-                      defaultValue={sampleVariantUpdates}
-                    />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Update prices
-                    </button>
-                  </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>}
-
-            {view === "update-stock" && <ToolCard
-              id="update-stock"
-              title="Update stock"
-              badges={["inventory", "location"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="update-stock" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload template="update-stock" fileName="variantsFile" />
-                  <div className={styles.field}>
-                    <label className={styles.label} htmlFor="stockLocation">
-                      Inventory location
-                    </label>
-                    <select
-                      className={styles.select}
-                      id="stockLocation"
-                      name="locationId"
-                      disabled={!hasLocations}
-                    >
-                      {locations.map((location: any) => (
-                        <option key={location.id} value={location.id}>
-                          {location.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {!hasLocations && (
-                    <div className={styles.warning}>
-                      Inventory locations are unavailable until Shopify grants
-                      the location scope.
+                    {!hasLocations && (
+                      <div className={styles.warning}>
+                        Inventory locations are unavailable until Shopify grants
+                        the location scope.
+                      </div>
+                    )}
+                    <details className={styles.details}>
+                      <summary>JSON fallback</summary>
+                      <textarea
+                        className={styles.textarea}
+                        name="products"
+                        defaultValue={sampleProducts}
+                      />
+                    </details>
+                    <div className={styles.actions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="submit"
+                        disabled={isSubmitting}
+                      >
+                        Create products
+                      </button>
                     </div>
-                  )}
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="variants"
-                      defaultValue={sampleVariantUpdates}
-                    />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Update stock
-                    </button>
                   </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>}
+                </fetcher.Form>
+              </ToolCard>
+            )}
 
-            {view === "bulk-images" && <ToolCard
-              id="bulk-images"
-              title="Bulk image update"
-              badges={["barcode", "current images", "7 new images"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="bulk-images" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload template="bulk-images" fileName="imagesFile" />
-                  <div className={styles.warning}>
-                    Add public image URLs in the New image columns. Shopify will
-                    attach those images to the matching product barcode.
-                  </div>
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="productImages"
-                      defaultValue="[]"
+            {view === "bulk-delete-status" && (
+              <ToolCard
+                id="bulk-delete-status"
+                title="Bulk delete / status"
+                badges={["barcode", "active", "draft", "delete"]}
+              >
+                <fetcher.Form method="post" encType="multipart/form-data">
+                  <input type="hidden" name="intent" value="bulk-delete" />
+                  <div className={styles.toolBody}>
+                    <TemplateUpload
+                      template="bulk-delete"
+                      fileName="productActionsFile"
                     />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Update images
-                    </button>
+                    <div className={styles.warning}>
+                      Only rows with an Action selected will be changed. Delete
+                      permanently removes those products from Shopify.
+                    </div>
+                    <details className={styles.details}>
+                      <summary>JSON fallback</summary>
+                      <textarea
+                        className={styles.textarea}
+                        name="productActions"
+                        defaultValue="[]"
+                      />
+                    </details>
+                    <div className={styles.actions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="submit"
+                        disabled={isSubmitting}
+                      >
+                        Apply actions
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>}
+                </fetcher.Form>
+              </ToolCard>
+            )}
 
-            {view === "bulk-variations" && <ToolCard
-              id="bulk-variations"
-              title="Bulk Variation manager"
-              badges={["parent SKU", "barcode", "option names"]}
-            >
-              <fetcher.Form method="post" encType="multipart/form-data">
-                <input type="hidden" name="intent" value="bulk-variations" />
-                <div className={styles.toolBody}>
-                  <TemplateUpload
-                    template="bulk-variations"
-                    fileName="variationsFile"
-                  />
-                  <div className={styles.warning}>
-                    Use the same Parent SKU for 2 to 20 barcodes. Choose Color,
-                    Size, or Set in the option name columns, then add the matching
-                    option values. The app creates a new parent product and does
-                    not delete the original listings automatically.
-                  </div>
-                  <details className={styles.details}>
-                    <summary>JSON fallback</summary>
-                    <textarea
-                      className={styles.textarea}
-                      name="variations"
-                      defaultValue='[{"parentSku":"ZH-808","barcode":"30801011","option1Name":"Color","option1Value":"Black","option2Name":"Size","option2Value":"Small"},{"parentSku":"ZH-808","barcode":"30801012","option1Name":"Color","option1Value":"White","option2Name":"Size","option2Value":"Medium"}]'
+            {view === "update-prices" && (
+              <ToolCard
+                id="update-prices"
+                title="Update prices"
+                badges={["variants", "price", "SKU"]}
+              >
+                <fetcher.Form method="post" encType="multipart/form-data">
+                  <input type="hidden" name="intent" value="update-prices" />
+                  <div className={styles.toolBody}>
+                    <TemplateUpload
+                      template="update-prices"
+                      fileName="variantsFile"
                     />
-                  </details>
-                  <div className={styles.actions}>
-                    <button
-                      className={styles.primaryButton}
-                      type="submit"
-                      disabled={isSubmitting}
-                    >
-                      Create variations
-                    </button>
+                    <details className={styles.details}>
+                      <summary>JSON fallback</summary>
+                      <textarea
+                        className={styles.textarea}
+                        name="variants"
+                        defaultValue={sampleVariantUpdates}
+                      />
+                    </details>
+                    <div className={styles.actions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="submit"
+                        disabled={isSubmitting}
+                      >
+                        Update prices
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </fetcher.Form>
-            </ToolCard>}
+                </fetcher.Form>
+              </ToolCard>
+            )}
 
+            {view === "update-stock" && (
+              <ToolCard
+                id="update-stock"
+                title="Update stock"
+                badges={["inventory", "location"]}
+              >
+                <fetcher.Form method="post" encType="multipart/form-data">
+                  <input type="hidden" name="intent" value="update-stock" />
+                  <div className={styles.toolBody}>
+                    <TemplateUpload
+                      template="update-stock"
+                      fileName="variantsFile"
+                    />
+                    <div className={styles.field}>
+                      <label className={styles.label} htmlFor="stockLocation">
+                        Inventory location
+                      </label>
+                      <select
+                        className={styles.select}
+                        id="stockLocation"
+                        name="locationId"
+                        disabled={!hasLocations}
+                      >
+                        {locations.map((location: any) => (
+                          <option key={location.id} value={location.id}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {!hasLocations && (
+                      <div className={styles.warning}>
+                        Inventory locations are unavailable until Shopify grants
+                        the location scope.
+                      </div>
+                    )}
+                    <details className={styles.details}>
+                      <summary>JSON fallback</summary>
+                      <textarea
+                        className={styles.textarea}
+                        name="variants"
+                        defaultValue={sampleVariantUpdates}
+                      />
+                    </details>
+                    <div className={styles.actions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="submit"
+                        disabled={isSubmitting}
+                      >
+                        Update stock
+                      </button>
+                    </div>
+                  </div>
+                </fetcher.Form>
+              </ToolCard>
+            )}
+
+            {view === "bulk-images" && (
+              <ToolCard
+                id="bulk-images"
+                title="Bulk image update"
+                badges={["barcode", "current images", "7 new images"]}
+              >
+                <fetcher.Form method="post" encType="multipart/form-data">
+                  <input type="hidden" name="intent" value="bulk-images" />
+                  <div className={styles.toolBody}>
+                    <TemplateUpload
+                      template="bulk-images"
+                      fileName="imagesFile"
+                    />
+                    <div className={styles.warning}>
+                      Add public image URLs in the New image columns. Shopify
+                      will attach those images to the matching product barcode.
+                    </div>
+                    <details className={styles.details}>
+                      <summary>JSON fallback</summary>
+                      <textarea
+                        className={styles.textarea}
+                        name="productImages"
+                        defaultValue="[]"
+                      />
+                    </details>
+                    <div className={styles.actions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="submit"
+                        disabled={isSubmitting}
+                      >
+                        Update images
+                      </button>
+                    </div>
+                  </div>
+                </fetcher.Form>
+              </ToolCard>
+            )}
+
+            {view === "bulk-variations" && (
+              <ToolCard
+                id="bulk-variations"
+                title="Bulk Variation manager"
+                badges={["parent SKU", "barcode", "option names"]}
+              >
+                <fetcher.Form method="post" encType="multipart/form-data">
+                  <input type="hidden" name="intent" value="bulk-variations" />
+                  <div className={styles.toolBody}>
+                    <TemplateUpload
+                      template="bulk-variations"
+                      fileName="variationsFile"
+                    />
+                    <div className={styles.warning}>
+                      Use the same Parent SKU for 2 to 20 barcodes. Choose
+                      Color, Size, or Set in the option name columns, then add
+                      the matching option values. The first barcode stays as the
+                      parent listing; the remaining barcodes become variants and
+                      their old separate product listings are deleted after a
+                      successful merge.
+                    </div>
+                    <details className={styles.details}>
+                      <summary>JSON fallback</summary>
+                      <textarea
+                        className={styles.textarea}
+                        name="variations"
+                        defaultValue='[{"parentSku":"ZH-808","barcode":"30801011","option1Name":"Color","option1Value":"Black","option2Name":"Size","option2Value":"Small"},{"parentSku":"ZH-808","barcode":"30801012","option1Name":"Color","option1Value":"White","option2Name":"Size","option2Value":"Medium"}]'
+                      />
+                    </details>
+                    <div className={styles.actions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="submit"
+                        disabled={isSubmitting}
+                      >
+                        Create variations
+                      </button>
+                    </div>
+                  </div>
+                </fetcher.Form>
+              </ToolCard>
+            )}
           </div>
 
           <aside className={styles.sidePanel}>
@@ -1482,7 +1530,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                           {activeJob.status} | {activeJob.message || "Working"}
                         </div>
                       </div>
-                      <strong>{Math.max(0, Math.min(100, activeJob.progress))}%</strong>
+                      <strong>
+                        {Math.max(0, Math.min(100, activeJob.progress))}%
+                      </strong>
                     </div>
                     <div className={styles.progressTrack}>
                       <span
@@ -1507,8 +1557,10 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                     <div>
                       <div className={styles.productTitle}>{file.label}</div>
                       <div className={styles.productMeta}>
-                        {file.status === "success" ? "Successful file" : "Error file"} |{" "}
-                        {new Date(file.createdAt).toLocaleString()}
+                        {file.status === "success"
+                          ? "Successful file"
+                          : "Error file"}{" "}
+                        | {new Date(file.createdAt).toLocaleString()}
                       </div>
                     </div>
                     <button
@@ -1543,7 +1595,9 @@ export function BulkProducts({ view = "dashboard" }: { view?: BulkManagerView })
                     Who uploaded, when, and row results
                   </div>
                 </div>
-                <span className={styles.countBadge}>{activityForView.length}</span>
+                <span className={styles.countBadge}>
+                  {activityForView.length}
+                </span>
               </div>
               <div className={styles.panelBody}>
                 <ActivityLog entries={activityForView.slice(0, 6)} compact />
