@@ -31,15 +31,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       ? await createStockTemplateWorkbook(request)
       : template === "update-prices"
         ? await createPriceTemplateWorkbook(request)
-      : template === "bulk-images"
-        ? await createImageTemplateWorkbook(request)
-      : template === "bulk-delete"
-        ? await createBulkDeleteTemplateWorkbook(request)
-      : template === "bulk-variations"
-        ? await createVariationTemplateWorkbook()
-      : template === "create-products"
-        ? await createProductTemplateWorkbook()
-      : createTemplateWorkbook(template);
+        : template === "bulk-images"
+          ? await createImageTemplateWorkbook(request)
+          : template === "bulk-delete"
+            ? await createBulkDeleteTemplateWorkbook(request)
+            : template === "bulk-variations"
+              ? await createVariationTemplateWorkbook()
+              : template === "create-products"
+                ? await createProductTemplateWorkbook()
+                : createTemplateWorkbook(template);
 
   return new Response(workbook.buffer, {
     headers: {
@@ -73,7 +73,7 @@ async function createImageTemplateWorkbook(request: Request) {
     sheetName: templateDefinitions["bulk-images"].sheetName,
     rows: await getImageTemplateRows(admin),
     headers: IMAGE_TEMPLATE_HEADERS,
-    hiddenColumns: ["Product ID"],
+    hiddenColumns: ["Variant ID", "Product ID"],
     dropdowns: {},
   });
 }
@@ -102,6 +102,7 @@ async function createBulkDeleteTemplateWorkbook(request: Request) {
     hiddenColumns: ["Product ID"],
     dropdowns: {
       Action: ["Active", "Draft", "Unlist", "Delete"],
+      "Requires shipping": ["TRUE", "FALSE"],
     },
   });
 }
@@ -129,11 +130,14 @@ async function createProductTemplateWorkbook() {
       Status: ["ACTIVE", "DRAFT", "ARCHIVED"],
       Publish: ["TRUE", "FALSE"],
       "Charge tax": ["TRUE", "FALSE"],
+      "Requires shipping": ["TRUE", "FALSE"],
       "Inventory tracker": ["shopify", ""],
       "Continue selling when out of stock": ["TRUE", "FALSE"],
     },
     dropdownSources: {
-      "Product category": shopifyCategoryOptions.map((category) => category.label),
+      "Product category": shopifyCategoryOptions.map(
+        (category) => category.label,
+      ),
     },
   });
 }

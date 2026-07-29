@@ -24,6 +24,7 @@ export type ProductRow = {
   sku?: string;
   barcode?: string;
   taxable?: boolean;
+  requiresShipping?: boolean;
   tracked?: boolean;
   inventoryPolicy?: "CONTINUE" | "DENY";
   quantity?: number;
@@ -53,6 +54,7 @@ export type VariantUpdateRow = {
   sku?: string;
   barcode?: string;
   taxable?: boolean;
+  requiresShipping?: boolean;
   tracked?: boolean;
   inventoryPolicy?: "CONTINUE" | "DENY";
   inventoryItemId?: string;
@@ -62,8 +64,10 @@ export type VariantUpdateRow = {
 
 export type ProductActionRow = {
   productId: string;
+  variantId?: string;
   barcode?: string;
   title?: string;
+  requiresShipping?: boolean;
   action?: "ACTIVE" | "DRAFT" | "ARCHIVED" | "DELETE";
 };
 
@@ -96,7 +100,10 @@ export const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
   "Current stock",
   "Current status",
+  "Current requires shipping",
+  "Requires shipping",
   "Action",
+  "Variant ID",
   "Product ID",
 ];
 
@@ -290,6 +297,7 @@ export function normalizeProductRows(
         sku: rowValue(raw, ["SKU"]),
         barcode: rowValue(raw, ["Barcode"]),
         taxable: booleanValue(rowValue(raw, ["Charge tax"])),
+        requiresShipping: booleanValue(rowValue(raw, ["Requires shipping"])),
         tracked: inventoryTracker
           ? inventoryTracker.toLowerCase() === "shopify"
           : undefined,
@@ -358,11 +366,16 @@ export function normalizePriceRows(
         compareAtPrice: decimalStringValue(
           rowValue(raw, ["New compare price", "compareAtPrice"]),
         ),
+        requiresShipping: booleanValue(
+          rowValue(raw, ["Requires shipping", "requiresShipping"]),
+        ),
       };
     })
     .filter(
       (row) =>
-        row.productId && row.variantId && (row.price || row.compareAtPrice),
+        row.productId &&
+        row.variantId &&
+        (row.price || row.compareAtPrice || row.requiresShipping !== undefined),
     );
 }
 
@@ -379,14 +392,22 @@ export function normalizeProductActionRows(
 
       return {
         productId: rowValue(raw, ["Product ID", "productId"]),
+        variantId: rowValue(raw, ["Variant ID", "variantId"]),
         barcode: rowValue(raw, ["Barcode", "barcode"]),
         title: rowValue(raw, ["Title", "Product title", "title"]),
+        requiresShipping: booleanValue(
+          rowValue(raw, ["Requires shipping", "requiresShipping"]),
+        ),
         action: productActionValue(
           rowValue(raw, ["Action", "Status", "status"]),
         ),
       };
     })
-    .filter((row) => (row.productId || row.barcode || row.title) && row.action);
+    .filter(
+      (row) =>
+        (row.productId || row.barcode || row.title) &&
+        (row.action || row.requiresShipping !== undefined),
+    );
 }
 
 export function normalizeImageRows(
@@ -677,8 +698,12 @@ const BULK_DELETE_TEMPLATE_QUERY = `#graphql
           variants(first: 1) {
             edges {
               node {
+                id
                 barcode
                 inventoryQuantity
+                inventoryItem {
+                  requiresShipping
+                }
               }
             }
           }
@@ -719,7 +744,11 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
             : product.status === "ARCHIVED"
               ? "Unlist"
               : "Draft",
+        "Current requires shipping":
+          variant?.inventoryItem?.requiresShipping === false ? "FALSE" : "TRUE",
+        "Requires shipping": "",
         Action: "",
+        "Variant ID": variant?.id || "",
         "Product ID": product.id || "",
       });
     }
@@ -1352,9 +1381,16 @@ async function createVariationsOnExistingProduct(
   }
 
   const childMediaUrls = childSources
-    .map((source) => source.variant.product?.featuredMedia?.preview?.image?.url || "")
+    .map(
+      (source) =>
+        source.variant.product?.featuredMedia?.preview?.image?.url || "",
+    )
     .filter(Boolean);
-  const mediaByUrl = await createProductMedia(admin, parentProductId, childMediaUrls);
+  const mediaByUrl = await createProductMedia(
+    admin,
+    parentProductId,
+    childMediaUrls,
+  );
   const variants = childSources.map((source) => {
     const variant = source.variant;
     const mediaUrl = variant.product?.featuredMedia?.preview?.image?.url || "";
@@ -1628,6 +1664,50 @@ async function resolveProductIdFromTitle(
   return productId;
 }
 
+async function resolveFirstVariantIdFromProductId(
+  admin: GraphqlClient,
+  productId: string | undefined,
+  cache: Map<string, string>,
+) {
+  const normalizedProductId = productId?.trim();
+
+  if (!normalizedProductId) {
+    return "";
+  }
+
+  if (cache.has(normalizedProductId)) {
+    return cache.get(normalizedProductId) || "";
+  }
+
+  const response = await admin.graphql(
+    `#graphql
+      query BulkListingProductFirstVariant($id: ID!) {
+        product(id: $id) {
+          variants(first: 1) {
+            edges {
+              node {
+                id
+              }
+            }
+          }
+        }
+      }`,
+    { variables: { id: normalizedProductId } },
+  );
+  const json = await response.json();
+
+  if (json.errors?.length) {
+    throw new Error(
+      json.errors.map((error: { message: string }) => error.message).join(", "),
+    );
+  }
+
+  const variantId = json.data?.product?.variants?.edges?.[0]?.node?.id || "";
+
+  cache.set(normalizedProductId, variantId);
+  return variantId;
+}
+
 export async function resolveStatusRowsProductIds(
   admin: GraphqlClient,
   rows: VariantUpdateRow[],
@@ -1857,6 +1937,7 @@ export async function createProducts(
           row.cost ||
           row.barcode ||
           row.taxable !== undefined ||
+          row.requiresShipping !== undefined ||
           row.tracked !== undefined ||
           row.inventoryPolicy)
       ) {
@@ -1870,6 +1951,7 @@ export async function createProducts(
             sku: row.sku,
             barcode: row.barcode,
             taxable: row.taxable,
+            requiresShipping: row.requiresShipping,
             inventoryPolicy: row.inventoryPolicy,
             tracked: row.tracked ?? row.quantity !== undefined,
           },
@@ -2212,13 +2294,19 @@ export async function applyProductActions(
     ARCHIVED: [],
   };
   const deleteIds: string[] = [];
+  const shippingRows: VariantUpdateRow[] = [];
   const missingRows = [];
   const barcodeCache = new Map<string, string>();
   const titleCache = new Map<string, string>();
+  const variantCache = new Map<string, string>();
 
   for (const row of rows) {
+    const barcodeVariant = row.barcode
+      ? await findExistingVariantByBarcode(admin, row.barcode)
+      : null;
     const productId =
       row.productId ||
+      barcodeVariant?.product?.id ||
       (await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache)) ||
       (await resolveProductIdFromTitle(admin, row.title, titleCache));
 
@@ -2238,6 +2326,35 @@ export async function applyProductActions(
     if (row.action === "DELETE") {
       deleteIds.push(productId);
       continue;
+    }
+
+    if (row.requiresShipping !== undefined) {
+      const variantId =
+        row.variantId ||
+        barcodeVariant?.id ||
+        (await resolveFirstVariantIdFromProductId(
+          admin,
+          productId,
+          variantCache,
+        ));
+
+      if (variantId) {
+        shippingRows.push({
+          productId,
+          variantId,
+          requiresShipping: row.requiresShipping,
+        });
+      } else {
+        missingRows.push({
+          barcode: row.barcode || "",
+          title: row.title || "",
+          productId,
+          action: "REQUIRES_SHIPPING",
+          success: false,
+          message:
+            "Could not find one Shopify variant to update Requires shipping.",
+        });
+      }
     }
 
     if (row.action) {
@@ -2262,8 +2379,32 @@ export async function applyProductActions(
   }
 
   const deleted = await deleteProducts(admin, Array.from(new Set(deleteIds)));
+  const shipping =
+    shippingRows.length > 0
+      ? await updateVariantPrices(admin, shippingRows)
+      : null;
   const statusRows = statuses.flat();
-  const allRows = [...statusRows, ...deleted, ...missingRows];
+  const shippingResultRows = [
+    ...(shipping?.rows || []).map((row) => ({
+      productId: row.productId,
+      variants: row.updated,
+      action: "REQUIRES_SHIPPING",
+      success: true,
+      message: "Requires shipping updated.",
+    })),
+    ...(shipping?.errors || []).map((row) => ({
+      productId: row.productId,
+      action: "REQUIRES_SHIPPING",
+      success: false,
+      message: row.message,
+    })),
+  ];
+  const allRows = [
+    ...statusRows,
+    ...deleted,
+    ...shippingResultRows,
+    ...missingRows,
+  ];
 
   return {
     summary: {
@@ -2361,6 +2502,7 @@ export async function updateVariantPrices(
                   sku: variant.sku,
                   cost: decimalStringValue(String(variant.cost || "")),
                   tracked: variant.tracked,
+                  requiresShipping: variant.requiresShipping,
                 });
 
                 return compactObject({

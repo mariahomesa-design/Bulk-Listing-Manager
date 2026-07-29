@@ -50,6 +50,7 @@ export const templateDefinitions: Record<TemplateKey, TemplateDefinition> = {
         "Compare-at price": "24.99",
         "Cost per item": "9.50",
         "Charge tax": "TRUE",
+        "Requires shipping": "TRUE",
         "Inventory tracker": "shopify",
         "Inventory quantity": 20,
         "Continue selling when out of stock": "FALSE",
@@ -259,7 +260,11 @@ export async function createWorkbookWithDropdownsFromRows({
       continue;
     }
 
-    for (let rowIndex = 2; rowIndex <= Math.max(rows.length + 1, 10000); rowIndex += 1) {
+    for (
+      let rowIndex = 2;
+      rowIndex <= Math.max(rows.length + 1, 10000);
+      rowIndex += 1
+    ) {
       worksheet.getCell(rowIndex, columnIndex).dataValidation = {
         type: "list",
         allowBlank: true,
@@ -289,7 +294,11 @@ export async function createWorkbookWithDropdownsFromRows({
 
     const range = `'${sourceSheetName}'!$A$1:$A$${values.length}`;
 
-    for (let rowIndex = 2; rowIndex <= Math.max(rows.length + 1, 10000); rowIndex += 1) {
+    for (
+      let rowIndex = 2;
+      rowIndex <= Math.max(rows.length + 1, 10000);
+      rowIndex += 1
+    ) {
       worksheet.getCell(rowIndex, columnIndex).dataValidation = {
         type: "list",
         allowBlank: true,
@@ -333,7 +342,5 @@ export async function parseWorkbookRows<T>(
 }
 
 export function normalizeStringArrayRows(rows: Record<string, unknown>[]) {
-  return rows
-    .map((row) => String(row.productId || "").trim())
-    .filter(Boolean);
+  return rows.map((row) => String(row.productId || "").trim()).filter(Boolean);
 }

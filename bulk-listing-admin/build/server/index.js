@@ -357,6 +357,7 @@ const templateDefinitions = {
         "Compare-at price": "24.99",
         "Cost per item": "9.50",
         "Charge tax": "TRUE",
+        "Requires shipping": "TRUE",
         "Inventory tracker": "shopify",
         "Inventory quantity": 20,
         "Continue selling when out of stock": "FALSE",
@@ -608,7 +609,10 @@ const BULK_DELETE_TEMPLATE_HEADERS = [
   "Barcode",
   "Current stock",
   "Current status",
+  "Current requires shipping",
+  "Requires shipping",
   "Action",
+  "Variant ID",
   "Product ID"
 ];
 const IMAGE_TEMPLATE_HEADERS = [
@@ -751,6 +755,7 @@ function normalizeProductRows(rows) {
       sku: rowValue(raw, ["SKU"]),
       barcode: rowValue(raw, ["Barcode"]),
       taxable: booleanValue(rowValue(raw, ["Charge tax"])),
+      requiresShipping: booleanValue(rowValue(raw, ["Requires shipping"])),
       tracked: inventoryTracker ? inventoryTracker.toLowerCase() === "shopify" : void 0,
       inventoryPolicy,
       quantity: numberValue(rowValue(raw, ["Inventory quantity"])),
@@ -800,10 +805,13 @@ function normalizePriceRows(rows) {
       price: decimalStringValue(rowValue(raw, ["New price", "price"])),
       compareAtPrice: decimalStringValue(
         rowValue(raw, ["New compare price", "compareAtPrice"])
+      ),
+      requiresShipping: booleanValue(
+        rowValue(raw, ["Requires shipping", "requiresShipping"])
       )
     };
   }).filter(
-    (row) => row.productId && row.variantId && (row.price || row.compareAtPrice)
+    (row) => row.productId && row.variantId && (row.price || row.compareAtPrice || row.requiresShipping !== void 0)
   );
 }
 function normalizeProductActionRows(rows) {
@@ -814,13 +822,19 @@ function normalizeProductActionRows(rows) {
     }
     return {
       productId: rowValue(raw, ["Product ID", "productId"]),
+      variantId: rowValue(raw, ["Variant ID", "variantId"]),
       barcode: rowValue(raw, ["Barcode", "barcode"]),
       title: rowValue(raw, ["Title", "Product title", "title"]),
+      requiresShipping: booleanValue(
+        rowValue(raw, ["Requires shipping", "requiresShipping"])
+      ),
       action: productActionValue(
         rowValue(raw, ["Action", "Status", "status"])
       )
     };
-  }).filter((row) => (row.productId || row.barcode || row.title) && row.action);
+  }).filter(
+    (row) => (row.productId || row.barcode || row.title) && (row.action || row.requiresShipping !== void 0)
+  );
 }
 function normalizeImageRows(rows) {
   return rows.map((row) => {
@@ -1051,8 +1065,12 @@ const BULK_DELETE_TEMPLATE_QUERY = `#graphql
           variants(first: 1) {
             edges {
               node {
+                id
                 barcode
                 inventoryQuantity
+                inventoryItem {
+                  requiresShipping
+                }
               }
             }
           }
@@ -1082,7 +1100,10 @@ async function getBulkDeleteTemplateRows(admin) {
         Barcode: variant?.barcode || "",
         "Current stock": variant?.inventoryQuantity ?? "",
         "Current status": product.status === "ACTIVE" ? "Active" : product.status === "ARCHIVED" ? "Unlist" : "Draft",
+        "Current requires shipping": variant?.inventoryItem?.requiresShipping === false ? "FALSE" : "TRUE",
+        "Requires shipping": "",
         Action: "",
+        "Variant ID": variant?.id || "",
         "Product ID": product.id || ""
       });
     }
@@ -1594,8 +1615,14 @@ async function createVariationsOnExistingProduct(admin, parentProductId, sources
       variantsCreated: 0
     };
   }
-  const childMediaUrls = childSources.map((source) => source.variant.product?.featuredMedia?.preview?.image?.url || "").filter(Boolean);
-  const mediaByUrl = await createProductMedia(admin, parentProductId, childMediaUrls);
+  const childMediaUrls = childSources.map(
+    (source) => source.variant.product?.featuredMedia?.preview?.image?.url || ""
+  ).filter(Boolean);
+  const mediaByUrl = await createProductMedia(
+    admin,
+    parentProductId,
+    childMediaUrls
+  );
   const variants = childSources.map((source) => {
     const variant = source.variant;
     const mediaUrl = variant.product?.featuredMedia?.preview?.image?.url || "";
@@ -1812,6 +1839,39 @@ async function resolveProductIdFromTitle(admin, title2, cache) {
   cache.set(normalizedTitle, productId);
   return productId;
 }
+async function resolveFirstVariantIdFromProductId(admin, productId, cache) {
+  const normalizedProductId = productId?.trim();
+  if (!normalizedProductId) {
+    return "";
+  }
+  if (cache.has(normalizedProductId)) {
+    return cache.get(normalizedProductId) || "";
+  }
+  const response = await admin.graphql(
+    `#graphql
+      query BulkListingProductFirstVariant($id: ID!) {
+        product(id: $id) {
+          variants(first: 1) {
+            edges {
+              node {
+                id
+              }
+            }
+          }
+        }
+      }`,
+    { variables: { id: normalizedProductId } }
+  );
+  const json = await response.json();
+  if (json.errors?.length) {
+    throw new Error(
+      json.errors.map((error) => error.message).join(", ")
+    );
+  }
+  const variantId = json.data?.product?.variants?.edges?.[0]?.node?.id || "";
+  cache.set(normalizedProductId, variantId);
+  return variantId;
+}
 async function resolveStatusRowsProductIds(admin, rows) {
   const barcodeCache = /* @__PURE__ */ new Map();
   const resolved = [];
@@ -1987,7 +2047,7 @@ async function createProducts(admin, rows, locationId) {
     }
     const variant = product.variants.edges[0]?.node;
     try {
-      if (variant && (row.price || row.sku || row.compareAtPrice || row.cost || row.barcode || row.taxable !== void 0 || row.tracked !== void 0 || row.inventoryPolicy)) {
+      if (variant && (row.price || row.sku || row.compareAtPrice || row.cost || row.barcode || row.taxable !== void 0 || row.requiresShipping !== void 0 || row.tracked !== void 0 || row.inventoryPolicy)) {
         await updateVariantPrices(admin, [
           {
             productId: product.id,
@@ -1998,6 +2058,7 @@ async function createProducts(admin, rows, locationId) {
             sku: row.sku,
             barcode: row.barcode,
             taxable: row.taxable,
+            requiresShipping: row.requiresShipping,
             inventoryPolicy: row.inventoryPolicy,
             tracked: row.tracked ?? row.quantity !== void 0
           }
@@ -2286,11 +2347,14 @@ async function applyProductActions(admin, rows) {
     ARCHIVED: []
   };
   const deleteIds = [];
+  const shippingRows = [];
   const missingRows = [];
   const barcodeCache = /* @__PURE__ */ new Map();
   const titleCache = /* @__PURE__ */ new Map();
+  const variantCache = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    const productId = row.productId || await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache) || await resolveProductIdFromTitle(admin, row.title, titleCache);
+    const barcodeVariant = row.barcode ? await findExistingVariantByBarcode(admin, row.barcode) : null;
+    const productId = row.productId || barcodeVariant?.product?.id || await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache) || await resolveProductIdFromTitle(admin, row.title, titleCache);
     if (!productId) {
       missingRows.push({
         barcode: row.barcode || "",
@@ -2305,6 +2369,29 @@ async function applyProductActions(admin, rows) {
     if (row.action === "DELETE") {
       deleteIds.push(productId);
       continue;
+    }
+    if (row.requiresShipping !== void 0) {
+      const variantId = row.variantId || barcodeVariant?.id || await resolveFirstVariantIdFromProductId(
+        admin,
+        productId,
+        variantCache
+      );
+      if (variantId) {
+        shippingRows.push({
+          productId,
+          variantId,
+          requiresShipping: row.requiresShipping
+        });
+      } else {
+        missingRows.push({
+          barcode: row.barcode || "",
+          title: row.title || "",
+          productId,
+          action: "REQUIRES_SHIPPING",
+          success: false,
+          message: "Could not find one Shopify variant to update Requires shipping."
+        });
+      }
     }
     if (row.action) {
       statusGroups[row.action].push(productId);
@@ -2324,8 +2411,29 @@ async function applyProductActions(admin, rows) {
     }
   }
   const deleted = await deleteProducts(admin, Array.from(new Set(deleteIds)));
+  const shipping = shippingRows.length > 0 ? await updateVariantPrices(admin, shippingRows) : null;
   const statusRows = statuses.flat();
-  const allRows = [...statusRows, ...deleted, ...missingRows];
+  const shippingResultRows = [
+    ...(shipping?.rows || []).map((row) => ({
+      productId: row.productId,
+      variants: row.updated,
+      action: "REQUIRES_SHIPPING",
+      success: true,
+      message: "Requires shipping updated."
+    })),
+    ...(shipping?.errors || []).map((row) => ({
+      productId: row.productId,
+      action: "REQUIRES_SHIPPING",
+      success: false,
+      message: row.message
+    }))
+  ];
+  const allRows = [
+    ...statusRows,
+    ...deleted,
+    ...shippingResultRows,
+    ...missingRows
+  ];
   return {
     summary: {
       total: allRows.length,
@@ -2404,7 +2512,8 @@ async function updateVariantPrices(admin, rows) {
                 const inventoryItem = compactObject({
                   sku: variant.sku,
                   cost: decimalStringValue(String(variant.cost || "")),
-                  tracked: variant.tracked
+                  tracked: variant.tracked,
+                  requiresShipping: variant.requiresShipping
                 });
                 return compactObject({
                   id: variant.variantId,
@@ -2614,7 +2723,7 @@ async function createImageTemplateWorkbook(request) {
     sheetName: templateDefinitions["bulk-images"].sheetName,
     rows: await getImageTemplateRows(admin),
     headers: IMAGE_TEMPLATE_HEADERS,
-    hiddenColumns: ["Product ID"],
+    hiddenColumns: ["Variant ID", "Product ID"],
     dropdowns: {}
   });
 }
@@ -2642,7 +2751,8 @@ async function createBulkDeleteTemplateWorkbook(request) {
     headers: BULK_DELETE_TEMPLATE_HEADERS,
     hiddenColumns: ["Product ID"],
     dropdowns: {
-      Action: ["Active", "Draft", "Unlist", "Delete"]
+      Action: ["Active", "Draft", "Unlist", "Delete"],
+      "Requires shipping": ["TRUE", "FALSE"]
     }
   });
 }
@@ -2668,6 +2778,7 @@ async function createProductTemplateWorkbook() {
       Status: ["ACTIVE", "DRAFT", "ARCHIVED"],
       Publish: ["TRUE", "FALSE"],
       "Charge tax": ["TRUE", "FALSE"],
+      "Requires shipping": ["TRUE", "FALSE"],
       "Inventory tracker": ["shopify", ""],
       "Continue selling when out of stock": ["TRUE", "FALSE"]
     },
