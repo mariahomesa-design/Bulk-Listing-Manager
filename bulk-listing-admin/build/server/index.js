@@ -2585,7 +2585,7 @@ async function updateInventoryQuantities(admin, rows, locationId) {
     inventoryItemId: row.inventoryItemId,
     locationId,
     quantity: row.quantity,
-    compareQuantity: null
+    changeFromQuantity: null
   }));
   const results = [];
   const errors = [];
@@ -2613,7 +2613,6 @@ async function updateInventoryQuantities(admin, rows, locationId) {
       const response = await admin.graphql(mutation, {
         variables: {
           input: {
-            ignoreCompareQuantity: true,
             name: "available",
             reason: "correction",
             referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}-${index + 1}`,
