@@ -33,6 +33,11 @@ type RowCounts = {
 };
 
 const activeJobs = new Set<string>();
+const statusPriority: Record<"ACTIVE" | "DRAFT" | "ARCHIVED", number> = {
+  DRAFT: 1,
+  ACTIVE: 2,
+  ARCHIVED: 3,
+};
 
 function rowCount(payload: BulkJobPayload) {
   return payload.rows?.length || payload.productIds?.length || 0;
@@ -214,6 +219,18 @@ function failureResultForPayload(
       message,
     },
   };
+}
+
+function desiredStockStatus(row: VariantUpdateRow) {
+  if (row.productStatus) {
+    return row.productStatus;
+  }
+
+  if (row.quantity === undefined) {
+    return undefined;
+  }
+
+  return row.quantity > 0 ? "ACTIVE" : "DRAFT";
 }
 
 export async function createBulkJob({
@@ -467,21 +484,39 @@ async function runBulkJobIntent(
           };
     await progress(70, "Updating product statuses.");
     const resolvedStatusRows = await resolveStatusRowsProductIds(admin, rows);
-    const statusGroups = resolvedStatusRows.reduce<
+    const statusPlans = new Map<
+      string,
+      { status: "ACTIVE" | "DRAFT" | "ARCHIVED"; rows: VariantUpdateRow[] }
+    >();
+
+    for (const row of resolvedStatusRows) {
+      const status = desiredStockStatus(row);
+
+      if (!row.productId || !status) {
+        continue;
+      }
+
+      const existing = statusPlans.get(row.productId);
+
+      if (!existing || statusPriority[status] > statusPriority[existing.status]) {
+        statusPlans.set(row.productId, { status, rows: [row] });
+      } else {
+        existing.rows.push(row);
+      }
+    }
+
+    const statusGroups = Array.from(statusPlans.entries()).reduce<
       Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]>
     >(
-      (groups, row) => {
-        if (row.productId && row.productStatus) {
-          groups[row.productStatus].push(row.productId);
-        }
-
+      (groups, [productId, plan]) => {
+        groups[plan.status].push(productId);
         return groups;
       },
       { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
     );
     const statusResult = [];
     const missingStatusRows = resolvedStatusRows.filter(
-      (row) => row.productStatus && !row.productId,
+      (row) => desiredStockStatus(row) && !row.productId,
     );
 
     for (const [status, productIds] of Object.entries(statusGroups)) {
@@ -498,16 +533,32 @@ async function runBulkJobIntent(
       }
     }
 
+    const statusOutcomes = new Map(
+      statusResult.flat().map((row) => [row.productId, row]),
+    );
+
     return {
       stock: stockResult,
       statuses: [
-        ...statusResult,
         missingStatusRows.map((row) => ({
           productId: "",
           barcode: row.barcode || "",
-          action: row.productStatus,
+          action: desiredStockStatus(row),
           success: false,
           message: "Could not find a Shopify product for this barcode.",
+        })),
+        Array.from(statusPlans.entries()).map(([productId, plan]) => ({
+          operation: "Stock status rule",
+          productId,
+          barcode: plan.rows.map((row) => row.barcode).filter(Boolean).join(", "),
+          sku: plan.rows.map((row) => row.sku).filter(Boolean).join(", "),
+          quantity: plan.rows
+            .map((row) => row.quantity)
+            .filter((value) => value !== undefined)
+            .join(", "),
+          action: plan.status,
+          success: statusOutcomes.get(productId)?.success ?? false,
+          message: statusOutcomes.get(productId)?.message || "Status update result missing.",
         })),
       ].filter((group) => Array.isArray(group) && group.length > 0),
     };

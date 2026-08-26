@@ -1716,7 +1716,7 @@ export async function resolveStatusRowsProductIds(
   const resolved = [];
 
   for (const row of rows) {
-    if (!row.productStatus) {
+    if (!row.productStatus && row.quantity === undefined) {
       continue;
     }
 

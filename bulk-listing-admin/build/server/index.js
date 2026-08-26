@@ -1876,7 +1876,7 @@ async function resolveStatusRowsProductIds(admin, rows) {
   const barcodeCache = /* @__PURE__ */ new Map();
   const resolved = [];
   for (const row of rows) {
-    if (!row.productStatus) {
+    if (!row.productStatus && row.quantity === void 0) {
       continue;
     }
     const productId = row.productId || await resolveProductIdFromBarcode(admin, row.barcode, barcodeCache);
@@ -2795,6 +2795,11 @@ const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   loader: loader$2
 }, Symbol.toStringTag, { value: "Module" }));
 const activeJobs = /* @__PURE__ */ new Set();
+const statusPriority = {
+  DRAFT: 1,
+  ACTIVE: 2,
+  ARCHIVED: 3
+};
 function rowCount(payload) {
   return payload.rows?.length || payload.productIds?.length || 0;
 }
@@ -2923,6 +2928,15 @@ function failureResultForPayload(intent, payload, message) {
       message
     }
   };
+}
+function desiredStockStatus(row) {
+  if (row.productStatus) {
+    return row.productStatus;
+  }
+  if (row.quantity === void 0) {
+    return void 0;
+  }
+  return row.quantity > 0 ? "ACTIVE" : "DRAFT";
 }
 async function createBulkJob({
   shop,
@@ -3122,18 +3136,29 @@ async function runBulkJobIntent(admin, intent, payload, progress) {
     };
     await progress(70, "Updating product statuses.");
     const resolvedStatusRows = await resolveStatusRowsProductIds(admin, rows);
-    const statusGroups = resolvedStatusRows.reduce(
-      (groups, row) => {
-        if (row.productId && row.productStatus) {
-          groups[row.productStatus].push(row.productId);
-        }
+    const statusPlans = /* @__PURE__ */ new Map();
+    for (const row of resolvedStatusRows) {
+      const status = desiredStockStatus(row);
+      if (!row.productId || !status) {
+        continue;
+      }
+      const existing = statusPlans.get(row.productId);
+      if (!existing || statusPriority[status] > statusPriority[existing.status]) {
+        statusPlans.set(row.productId, { status, rows: [row] });
+      } else {
+        existing.rows.push(row);
+      }
+    }
+    const statusGroups = Array.from(statusPlans.entries()).reduce(
+      (groups, [productId, plan]) => {
+        groups[plan.status].push(productId);
         return groups;
       },
       { ACTIVE: [], DRAFT: [], ARCHIVED: [] }
     );
     const statusResult = [];
     const missingStatusRows = resolvedStatusRows.filter(
-      (row) => row.productStatus && !row.productId
+      (row) => desiredStockStatus(row) && !row.productId
     );
     for (const [status, productIds] of Object.entries(statusGroups)) {
       const uniqueProductIds = Array.from(new Set(productIds));
@@ -3147,16 +3172,28 @@ async function runBulkJobIntent(admin, intent, payload, progress) {
         );
       }
     }
+    const statusOutcomes = new Map(
+      statusResult.flat().map((row) => [row.productId, row])
+    );
     return {
       stock: stockResult,
       statuses: [
-        ...statusResult,
         missingStatusRows.map((row) => ({
           productId: "",
           barcode: row.barcode || "",
-          action: row.productStatus,
+          action: desiredStockStatus(row),
           success: false,
           message: "Could not find a Shopify product for this barcode."
+        })),
+        Array.from(statusPlans.entries()).map(([productId, plan]) => ({
+          operation: "Stock status rule",
+          productId,
+          barcode: plan.rows.map((row) => row.barcode).filter(Boolean).join(", "),
+          sku: plan.rows.map((row) => row.sku).filter(Boolean).join(", "),
+          quantity: plan.rows.map((row) => row.quantity).filter((value) => value !== void 0).join(", "),
+          action: plan.status,
+          success: statusOutcomes.get(productId)?.success ?? false,
+          message: statusOutcomes.get(productId)?.message || "Status update result missing."
         }))
       ].filter((group) => Array.isArray(group) && group.length > 0)
     };
