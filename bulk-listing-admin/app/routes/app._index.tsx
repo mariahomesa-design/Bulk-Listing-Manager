@@ -142,6 +142,12 @@ function getResultRows(data: any): Record<string, unknown>[] {
     return [];
   }
 
+  const result = data.result;
+
+  if (Array.isArray(result?.rows)) {
+    return result.rows.map((row: Record<string, unknown>) => row);
+  }
+
   if (data.error) {
     return [
       {
@@ -151,8 +157,6 @@ function getResultRows(data: any): Record<string, unknown>[] {
       },
     ];
   }
-
-  const result = data.result;
 
   if (!result) {
     return [];
@@ -168,10 +172,6 @@ function getResultRows(data: any): Record<string, unknown>[] {
       Message: row.message,
       "Product ID": row.productId,
     }));
-  }
-
-  if (Array.isArray(result.rows)) {
-    return result.rows.map((row: Record<string, unknown>) => row);
   }
 
   if (Array.isArray(result.errors) && result.errors.length > 0) {
