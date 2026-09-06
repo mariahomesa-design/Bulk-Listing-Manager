@@ -478,12 +478,17 @@ async function runBulkJobIntent(
             batches: 0,
             results: [],
             errors: [],
+            rowResults: [],
             updatedRows: 0,
             failedRows: 0,
             skipped: "No New stock values were provided.",
           };
     await progress(70, "Updating product statuses.");
     const resolvedStatusRows = await resolveStatusRowsProductIds(admin, rows);
+    const stockOutcomes = new Map(stockResult.rowResults.map((row) => [row.inventoryItemId, row]));
+    const stockFailed = (row: VariantUpdateRow) => row.quantity !== undefined &&
+      stockOutcomes.get(row.inventoryItemId)?.success !== true;
+    const blockedProducts = new Set(resolvedStatusRows.filter(stockFailed).map((row) => row.productId).filter(Boolean));
     const statusPlans = new Map<
       string,
       { status: "ACTIVE" | "DRAFT" | "ARCHIVED"; rows: VariantUpdateRow[] }
@@ -492,14 +497,14 @@ async function runBulkJobIntent(
     for (const row of resolvedStatusRows) {
       const status = desiredStockStatus(row);
 
-      if (!row.productId || !status) {
+      if (!row.productId || !status || stockFailed(row) || blockedProducts.has(row.productId)) {
         continue;
       }
 
       const existing = statusPlans.get(row.productId);
 
       if (!existing || statusPriority[status] > statusPriority[existing.status]) {
-        statusPlans.set(row.productId, { status, rows: [row] });
+        statusPlans.set(row.productId, { status, rows: [...(existing?.rows || []), row] });
       } else {
         existing.rows.push(row);
       }
@@ -539,6 +544,40 @@ async function runBulkJobIntent(
 
     return {
       stock: stockResult,
+      reportRows: resolvedStatusRows.map((row, index) => {
+        const stock = stockOutcomes.get(row.inventoryItemId);
+        const status = desiredStockStatus(row);
+        const messages: string[] = [];
+        let success = true;
+        if (row.quantity !== undefined) {
+          success = stock?.success === true;
+          messages.push(stock?.message || "Stock was not updated: no matching inventory item was found.");
+        }
+        if (status) {
+          if (stockFailed(row) || blockedProducts.has(row.productId)) {
+            success = false;
+            messages.push("Product status was not changed because a stock update for this product failed.");
+          } else if (!row.productId) {
+            success = false;
+            messages.push("Could not find a Shopify product for this barcode.");
+          } else {
+            const outcome = statusOutcomes.get(row.productId);
+            success = success && outcome?.success === true;
+            messages.push(outcome?.message || "Shopify did not confirm the status update.");
+          }
+        }
+        return {
+          row: index + 2,
+          sku: row.sku || "",
+          barcode: row.barcode || "",
+          productId: row.productId || "",
+          inventoryItemId: row.inventoryItemId || "",
+          quantity: row.quantity,
+          requestedStatus: status || "",
+          status: success ? "Success" : "Error",
+          message: messages.join(" "),
+        };
+      }),
       statuses: [
         missingStatusRows.map((row) => ({
           productId: "",

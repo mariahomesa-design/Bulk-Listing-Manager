@@ -163,7 +163,7 @@ function getResultRows(data: any): Record<string, unknown>[] {
   }
 
   if (Array.isArray(result.reportRows)) {
-    return result.reportRows.map((row: CreateProductReportRow) => ({
+    return result.reportRows.map((row: CreateProductReportRow & { quantity?: number; requestedStatus?: string; inventoryItemId?: string }) => ({
       Row: row.row,
       Title: row.title,
       SKU: row.sku,
@@ -171,6 +171,11 @@ function getResultRows(data: any): Record<string, unknown>[] {
       Status: row.status,
       Message: row.message,
       "Product ID": row.productId,
+      ...(data.intent === "update-stock" ? {
+        "New stock": row.quantity ?? "",
+        "Requested status": row.requestedStatus || "",
+        "Inventory item ID": row.inventoryItemId || "",
+      } : {}),
     }));
   }
 

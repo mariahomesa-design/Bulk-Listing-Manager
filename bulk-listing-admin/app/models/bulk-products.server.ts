@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { ApiVersion } from "@shopify/shopify-app-react-router/server";
 import {
   shopifyCategoryOptions,
   type ShopifyProductCategory,
@@ -6,7 +8,7 @@ import {
 type GraphqlClient = {
   graphql: (
     query: string,
-    options?: { variables?: Record<string, unknown> },
+    options?: { variables?: Record<string, unknown>; apiVersion?: ApiVersion; tries?: number },
   ) => Promise<Response>;
 };
 
@@ -1963,7 +1965,7 @@ export async function createProducts(
         locationId &&
         row.quantity !== undefined
       ) {
-        await updateInventoryQuantities(
+        const inventoryResult = await updateInventoryQuantities(
           admin,
           [
             {
@@ -1975,6 +1977,9 @@ export async function createProducts(
           ],
           locationId,
         );
+        if (inventoryResult.failedRows > 0) {
+          throw new Error(inventoryResult.errors.map((error) => error.message).join("; "));
+        }
       }
 
       if (row.publish) {
@@ -2587,8 +2592,8 @@ export async function updateInventoryQuantities(
     );
   }
 
-  const quantities = rows
-    .filter((row) => row.inventoryItemId && row.quantity !== undefined)
+  const stockRows = rows.filter((row) => row.inventoryItemId && row.quantity !== undefined);
+  const quantities = stockRows
     .map((row) => ({
       inventoryItemId: row.inventoryItemId,
       locationId,
@@ -2598,9 +2603,10 @@ export async function updateInventoryQuantities(
 
   const results = [];
   const errors = [];
+  const rowResults: Array<VariantUpdateRow & { success: boolean; message: string }> = [];
   const mutation = `#graphql
-    mutation BulkListingInventory($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) {
+    mutation BulkListingInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
+      inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
         inventoryAdjustmentGroup {
           createdAt
           reason
@@ -2619,9 +2625,14 @@ export async function updateInventoryQuantities(
     }`;
 
   for (const [index, quantityChunk] of chunkArray(quantities, 250).entries()) {
+    const sourceRows = stockRows.slice(index * 250, (index + 1) * 250);
     try {
       const response = await admin.graphql(mutation, {
+        // This mutation uses the 2026-04 quantity contract, independently of other app APIs.
+        apiVersion: ApiVersion.April26,
+        tries: 3,
         variables: {
+          idempotencyKey: randomUUID(),
           input: {
             name: "available",
             reason: "correction",
@@ -2634,36 +2645,35 @@ export async function updateInventoryQuantities(
       const json = await response.json();
 
       if (json.errors?.length) {
-        errors.push({
-          batch: index + 1,
-          rows: quantityChunk.length,
-          message: graphqlErrorMessage(json.errors),
-        });
-        continue;
+        throw new Error(graphqlErrorMessage(json.errors));
       }
 
       const result = json.data?.inventorySetQuantities;
       const userErrors = result?.userErrors || [];
 
       if (userErrors.length) {
-        errors.push({
-          batch: index + 1,
-          rows: quantityChunk.length,
-          message: userErrors.map((error: any) => error.message).join("; "),
-        });
-        continue;
+        throw new Error(userErrors.map((error: any) =>
+          `${error.code || "Inventory error"}: ${error.message}${error.field?.length ? ` (${error.field.join(".")})` : ""}`,
+        ).join("; "));
       }
 
+      if (!result?.inventoryAdjustmentGroup) {
+        throw new Error("Shopify did not confirm this stock batch. No successful update was recorded.");
+      }
+
+      rowResults.push(...sourceRows.map((row) => ({ ...row, success: true, message: "Stock updated successfully." })));
       results.push({
         batch: index + 1,
         rows: quantityChunk.length,
         changedAt: result?.inventoryAdjustmentGroup?.createdAt || null,
       });
     } catch (error) {
+      const message = errorMessage(error, "Stock update failed.");
+      rowResults.push(...sourceRows.map((row) => ({ ...row, success: false, message })));
       errors.push({
         batch: index + 1,
         rows: quantityChunk.length,
-        message: errorMessage(error, "Stock update failed."),
+        message,
       });
     }
   }
@@ -2672,7 +2682,8 @@ export async function updateInventoryQuantities(
     batches: results.length,
     results,
     errors,
-    updatedRows: quantities.length,
+    rowResults,
+    updatedRows: results.reduce((count, result) => count + result.rows, 0),
     failedRows: errors.reduce((count, error) => count + error.rows, 0),
   };
 }
