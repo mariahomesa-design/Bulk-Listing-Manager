@@ -473,7 +473,8 @@ async function runBulkJobIntent(
     await progress(25, "Updating stock quantities.");
     const stockResult =
       stockRows.length > 0
-        ? await updateInventoryQuantities(admin, stockRows, payload.locationId || "")
+        ? await updateInventoryQuantities(admin, stockRows, payload.locationId || "", async (done, total) =>
+            progress(25 + Math.floor(40 * done / total), `Processed stock for ${done} of ${total} rows.`))
         : {
             batches: 0,
             results: [],
@@ -520,6 +521,7 @@ async function runBulkJobIntent(
       { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
     );
     const statusResult = [];
+    let completedStatuses = 0;
     const missingStatusRows = resolvedStatusRows.filter(
       (row) => desiredStockStatus(row) && !row.productId,
     );
@@ -533,8 +535,11 @@ async function runBulkJobIntent(
             admin,
             uniqueProductIds,
             status as "ACTIVE" | "DRAFT" | "ARCHIVED",
+            async (done) => progress(70 + Math.floor(25 * (completedStatuses + done) / Math.max(1, statusPlans.size)),
+              `Processed status for ${completedStatuses + done} of ${statusPlans.size} products.`),
           ),
         );
+        completedStatuses += uniqueProductIds.length;
       }
     }
 

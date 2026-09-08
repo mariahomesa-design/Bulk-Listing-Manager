@@ -1,16 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { ApiVersion } from "@shopify/shopify-app-react-router/server";
+import { shopifyRequest, type GraphqlClient } from "./shopify-requests.server";
 import {
   shopifyCategoryOptions,
   type ShopifyProductCategory,
 } from "./bulk-spreadsheets.server";
-
-type GraphqlClient = {
-  graphql: (
-    query: string,
-    options?: { variables?: Record<string, unknown>; apiVersion?: ApiVersion; tries?: number },
-  ) => Promise<Response>;
-};
 
 export type ProductRow = {
   title: string;
@@ -551,7 +545,7 @@ export async function getImageTemplateRows(admin: GraphqlClient) {
   let hasNextPage = true;
 
   while (hasNextPage) {
-    const response = await admin.graphql(IMAGE_TEMPLATE_QUERY, {
+    const response = await shopifyRequest(admin, IMAGE_TEMPLATE_QUERY, {
       variables: { cursor },
     });
     const json = await response.json();
@@ -607,7 +601,7 @@ export async function getPriceTemplateRows(admin: GraphqlClient) {
   let hasNextPage = true;
 
   while (hasNextPage) {
-    const response = await admin.graphql(PRICE_TEMPLATE_QUERY, {
+    const response = await shopifyRequest(admin, PRICE_TEMPLATE_QUERY, {
       variables: { cursor },
     });
     const json = await response.json();
@@ -645,7 +639,7 @@ export async function getStockTemplateRows(admin: GraphqlClient) {
   let hasNextPage = true;
 
   while (hasNextPage) {
-    const response = await admin.graphql(STOCK_TEMPLATE_QUERY, {
+    const response = await shopifyRequest(admin, STOCK_TEMPLATE_QUERY, {
       variables: { cursor },
     });
     const json = await response.json();
@@ -721,7 +715,7 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
   let hasNextPage = true;
 
   while (hasNextPage) {
-    const response = await admin.graphql(BULK_DELETE_TEMPLATE_QUERY, {
+    const response = await shopifyRequest(admin, BULK_DELETE_TEMPLATE_QUERY, {
       variables: { cursor },
     });
     const json = await response.json();
@@ -838,7 +832,7 @@ export async function getBulkManagerData(admin: GraphqlClient) {
   let json: any = {};
 
   try {
-    const response = await admin.graphql(PRODUCT_LIST_QUERY);
+    const response = await shopifyRequest(admin, PRODUCT_LIST_QUERY);
     json = await response.json();
 
     if (json.errors) {
@@ -862,7 +856,7 @@ export async function getBulkManagerData(admin: GraphqlClient) {
   } = {};
 
   try {
-    const countResponse = await admin.graphql(STORE_COUNT_QUERY);
+    const countResponse = await shopifyRequest(admin, STORE_COUNT_QUERY);
     const countJson = await countResponse.json();
 
     if (!countJson.errors?.length) {
@@ -908,7 +902,7 @@ async function getPublicationIds(admin: GraphqlClient) {
   let cursor: string | null = null;
 
   do {
-    const response = await admin.graphql(
+    const response = await shopifyRequest(admin,
       `#graphql
         query BulkListingPublications($cursor: String) {
           publications(first: 250, after: $cursor) {
@@ -957,7 +951,7 @@ async function publishProductToPublications(
     return;
   }
 
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       mutation BulkListingPublishProduct(
         $id: ID!
@@ -1000,7 +994,7 @@ async function getProductMediaIds(admin: GraphqlClient, productId: string) {
   let hasNextPage = true;
 
   while (hasNextPage) {
-    const response = await admin.graphql(
+    const response = await shopifyRequest(admin,
       `#graphql
         query BulkListingProductMediaIds($id: ID!, $cursor: String) {
           product(id: $id) {
@@ -1055,7 +1049,7 @@ async function deleteProductMedia(
   const errors = [];
 
   for (const chunk of chunkArray(mediaIds, 250)) {
-    const response = await admin.graphql(
+    const response = await shopifyRequest(admin,
       `#graphql
         mutation BulkListingDeleteProductMedia($productId: ID!, $mediaIds: [ID!]!) {
           productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
@@ -1101,7 +1095,7 @@ async function findExistingVariantByBarcode(
   admin: GraphqlClient,
   barcode: string,
 ) {
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       query BulkListingFindBarcode($query: String!) {
         productVariants(first: 1, query: $query) {
@@ -1240,7 +1234,7 @@ async function ensureVariationOptions(
 ) {
   const optionNames = variationOptionNames(sources);
 
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       mutation BulkListingVariationOptionsCreate(
         $productId: ID!,
@@ -1309,7 +1303,7 @@ async function createProductMedia(
     return new Map<string, string>();
   }
 
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       mutation BulkListingCreateVariationMedia($productId: ID!, $media: [CreateMediaInput!]!) {
         productCreateMedia(productId: $productId, media: $media) {
@@ -1416,7 +1410,7 @@ async function createVariationsOnExistingProduct(
       mediaId: mediaByUrl.get(mediaUrl) || undefined,
     });
   });
-  const variantsResponse = await admin.graphql(
+  const variantsResponse = await shopifyRequest(admin,
     `#graphql
       mutation BulkVariationVariantsCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkCreate(productId: $productId, variants: $variants) {
@@ -1630,7 +1624,7 @@ async function resolveProductIdFromTitle(
     return cache.get(normalizedTitle) || "";
   }
 
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       query BulkListingProductByTitle($query: String!) {
         products(first: 2, query: $query) {
@@ -1681,7 +1675,7 @@ async function resolveFirstVariantIdFromProductId(
     return cache.get(normalizedProductId) || "";
   }
 
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       query BulkListingProductFirstVariant($id: ID!) {
         product(id: $id) {
@@ -1839,7 +1833,7 @@ export async function createProducts(
     let json: any;
 
     try {
-      const response = await admin.graphql(
+      const response = await shopifyRequest(admin,
         `#graphql
           mutation BulkListingProductCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
             productCreate(product: $product, media: $media) {
@@ -2093,7 +2087,7 @@ export async function updateProductImages(
 
     try {
       const oldMediaIds = await getProductMediaIds(admin, row.productId);
-      const response = await admin.graphql(mutation, {
+      const response = await shopifyRequest(admin, mutation, {
         variables: {
           productId: row.productId,
           media: row.imageUrls.map((url) => ({
@@ -2170,10 +2164,13 @@ export async function updateProductStatuses(
   admin: GraphqlClient,
   productIds: string[],
   status: "ACTIVE" | "DRAFT" | "ARCHIVED",
+  onProgress?: (completed: number, total: number) => Promise<void>,
 ) {
-  return mapWithConcurrency(Array.from(new Set(productIds)), 6, async (id) => {
+  const uniqueIds = Array.from(new Set(productIds));
+  let completed = 0;
+  return mapWithConcurrency(uniqueIds, 6, async (id) => {
     try {
-      const response = await admin.graphql(
+      const response = await shopifyRequest(admin,
         `#graphql
           mutation BulkListingProductStatus($product: ProductUpdateInput!) {
             productUpdate(product: $product) {
@@ -2212,11 +2209,12 @@ export async function updateProductStatuses(
         };
       }
 
+      const confirmed = result?.product?.id === id && result?.product?.status === status;
       return {
         productId: id,
         action: status,
-        success: true,
-        message: "Status updated.",
+        success: confirmed,
+        message: confirmed ? `Status updated to ${status}.` : "Shopify did not confirm the requested product status.",
       };
     } catch (error) {
       return {
@@ -2226,6 +2224,11 @@ export async function updateProductStatuses(
         message:
           error instanceof Error ? error.message : "Status update failed.",
       };
+    } finally {
+      completed += 1;
+      if (onProgress && (completed % 25 === 0 || completed === uniqueIds.length)) {
+        await onProgress(completed, uniqueIds.length);
+      }
     }
   });
 }
@@ -2236,7 +2239,7 @@ export async function deleteProducts(
 ) {
   return mapWithConcurrency(Array.from(new Set(productIds)), 4, async (id) => {
     try {
-      const response = await admin.graphql(
+      const response = await shopifyRequest(admin,
         `#graphql
           mutation BulkListingProductDelete($input: ProductDeleteInput!) {
             productDelete(input: $input) {
@@ -2486,7 +2489,7 @@ export async function updateVariantPrices(
   for (const [productId, variants] of Object.entries(byProduct)) {
     for (const chunk of chunkArray(variants, 100)) {
       try {
-        const response = await admin.graphql(
+        const response = await shopifyRequest(admin,
           `#graphql
             mutation BulkListingVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
               productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -2581,6 +2584,7 @@ export async function updateInventoryQuantities(
   admin: GraphqlClient,
   rows: VariantUpdateRow[],
   locationId: string,
+  onProgress?: (completed: number, total: number) => Promise<void>,
 ) {
   if (!locationId) {
     throw new Error("Choose an inventory location before updating stock.");
@@ -2593,16 +2597,8 @@ export async function updateInventoryQuantities(
   }
 
   const stockRows = rows.filter((row) => row.inventoryItemId && row.quantity !== undefined);
-  const quantities = stockRows
-    .map((row) => ({
-      inventoryItemId: row.inventoryItemId,
-      locationId,
-      quantity: row.quantity,
-      changeFromQuantity: null,
-    }));
-
-  const results = [];
-  const errors = [];
+  const results: Array<{ batch: number; rows: number; changedAt: string | null }> = [];
+  const errors: Array<{ batch: number; rows: number; message: string }> = [];
   const rowResults: Array<VariantUpdateRow & { success: boolean; message: string }> = [];
   const mutation = `#graphql
     mutation BulkListingInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
@@ -2624,19 +2620,24 @@ export async function updateInventoryQuantities(
       }
     }`;
 
-  for (const [index, quantityChunk] of chunkArray(quantities, 250).entries()) {
-    const sourceRows = stockRows.slice(index * 250, (index + 1) * 250);
+  async function processChunk(sourceRows: VariantUpdateRow[], batch: number): Promise<void> {
+    const quantityChunk = sourceRows.map((row) => ({
+      inventoryItemId: row.inventoryItemId,
+      locationId,
+      quantity: row.quantity,
+      changeFromQuantity: null,
+    }));
     try {
-      const response = await admin.graphql(mutation, {
+      const response = await shopifyRequest(admin, mutation, {
         // This mutation uses the 2026-04 quantity contract, independently of other app APIs.
         apiVersion: ApiVersion.April26,
-        tries: 3,
+        tries: 1,
         variables: {
           idempotencyKey: randomUUID(),
           input: {
             name: "available",
             reason: "correction",
-            referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}-${index + 1}`,
+            referenceDocumentUri: `bulk-listing-manager://stock-update/${Date.now()}-${batch}`,
             quantities: quantityChunk,
           },
         },
@@ -2652,6 +2653,13 @@ export async function updateInventoryQuantities(
       const userErrors = result?.userErrors || [];
 
       if (userErrors.length) {
+        // A rejected batch must not prevent unrelated valid inventory rows from updating.
+        if (!result?.inventoryAdjustmentGroup && sourceRows.length > 1) {
+          const middle = Math.ceil(sourceRows.length / 2);
+          await processChunk(sourceRows.slice(0, middle), batch);
+          await processChunk(sourceRows.slice(middle), batch);
+          return;
+        }
         throw new Error(userErrors.map((error: any) =>
           `${error.code || "Inventory error"}: ${error.message}${error.field?.length ? ` (${error.field.join(".")})` : ""}`,
         ).join("; "));
@@ -2663,7 +2671,7 @@ export async function updateInventoryQuantities(
 
       rowResults.push(...sourceRows.map((row) => ({ ...row, success: true, message: "Stock updated successfully." })));
       results.push({
-        batch: index + 1,
+        batch,
         rows: quantityChunk.length,
         changedAt: result?.inventoryAdjustmentGroup?.createdAt || null,
       });
@@ -2671,11 +2679,16 @@ export async function updateInventoryQuantities(
       const message = errorMessage(error, "Stock update failed.");
       rowResults.push(...sourceRows.map((row) => ({ ...row, success: false, message })));
       errors.push({
-        batch: index + 1,
+        batch,
         rows: quantityChunk.length,
         message,
       });
     }
+  }
+
+  for (const [index, sourceRows] of chunkArray(stockRows, 250).entries()) {
+    await processChunk(sourceRows, index + 1);
+    await onProgress?.(Math.min((index + 1) * 250, stockRows.length), stockRows.length);
   }
 
   return {
@@ -2693,7 +2706,7 @@ export async function addProductsToCollection(
   collectionId: string,
   productIds: string[],
 ) {
-  const response = await admin.graphql(
+  const response = await shopifyRequest(admin,
     `#graphql
       mutation BulkListingCollectionAdd($id: ID!, $productIds: [ID!]!) {
         collectionAddProducts(id: $id, productIds: $productIds) {
