@@ -144,7 +144,7 @@ function getResultRows(data: any): Record<string, unknown>[] {
 
   const result = data.result;
 
-  if (Array.isArray(result?.rows)) {
+  if (Array.isArray(result?.rows) && !Array.isArray(result?.reportRows)) {
     return result.rows.map((row: Record<string, unknown>) => row);
   }
 
@@ -453,12 +453,16 @@ function ToolCard({
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const [managerData, activityLog] = await Promise.all([
-    getBulkManagerData(admin),
+  const isDashboard = new URL(request.url).pathname.replace(/\/$/, "") === "/app";
+  const view = new URL(request.url).pathname.split("/").filter(Boolean).pop() as BulkManagerView;
+  const sectionIntent = viewIntent[view];
+  const [managerData, activityLog, sectionJobs] = await Promise.all([
+    getBulkManagerData(admin, isDashboard),
     getRecentBulkJobs(session.shop, undefined, 12),
+    sectionIntent ? getRecentBulkJobs(session.shop, sectionIntent, 6) : Promise.resolve([]),
   ]);
 
-  return { ...managerData, activityLog };
+  return { ...managerData, activityLog, sectionJobs, shop: session.shop };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -479,6 +483,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     payload: Record<string, unknown>,
     fileFields: string[] = [],
   ) {
+    if (Array.isArray(payload.rows) && payload.rows.length === 0) {
+      throw new Error("No changes were found in this file. Fill in the new values or actions before uploading.");
+    }
     const job = await createBulkJob({
       shop: session.shop,
       intent,
@@ -890,23 +897,23 @@ function Dashboard({
       <section className={styles.metricGrid} aria-label="Store overview">
         <div className={styles.metricCard}>
           <span className={styles.metricCaption}>Products</span>
-          <strong>{(productCount ?? products.length).toLocaleString()}</strong>
+          <strong>{productCount?.toLocaleString() ?? "Unavailable"}</strong>
           <span>Live catalog count</span>
         </div>
         <div className={styles.metricCard}>
           <span className={styles.metricCaption}>Active</span>
-          <strong>{(activeProductCount ?? 0).toLocaleString()}</strong>
+          <strong>{activeProductCount?.toLocaleString() ?? "Unavailable"}</strong>
           <span>Visible listings</span>
         </div>
         <div className={styles.metricCard}>
           <span className={styles.metricCaption}>Draft</span>
-          <strong>{(draftProductCount ?? 0).toLocaleString()}</strong>
+          <strong>{draftProductCount?.toLocaleString() ?? "Unavailable"}</strong>
           <span>Hidden drafts</span>
         </div>
         <div className={styles.metricCard}>
           <span className={styles.metricCaption}>Collections</span>
           <strong>
-            {(collectionCount ?? collections.length).toLocaleString()}
+            {collectionCount?.toLocaleString() ?? "Unavailable"}
           </strong>
           <span>Available groups</span>
         </div>
@@ -977,6 +984,7 @@ export function BulkProducts({
   view?: BulkManagerView;
 }) {
   const {
+    shop,
     products,
     productCount,
     activeProductCount,
@@ -985,13 +993,14 @@ export function BulkProducts({
     collectionCount,
     locations,
     activityLog = [],
+    sectionJobs = [],
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const isSubmitting = fetcher.state !== "idle";
   const hasLocations = locations.length > 0;
-  const historyKey = `mh-bulk-manager-history-${view}`;
-  const activeJobKey = `mh-bulk-manager-active-job-${view}`;
+  const historyKey = `mh-bulk-manager-history-${shop}-${view}`;
+  const activeJobKey = `mh-bulk-manager-active-job-${shop}-${view}`;
   const [historyFiles, setHistoryFiles] = useState<UpdateHistoryFile[]>([]);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeJob, setActiveJob] = useState<BulkJobStatus | null>(null);
@@ -1003,13 +1012,20 @@ export function BulkProducts({
     }
 
     try {
-      setHistoryFiles(
-        JSON.parse(window.localStorage.getItem(historyKey) || "[]"),
-      );
+      const saved = JSON.parse(window.localStorage.getItem(historyKey) || "[]");
+      const local: UpdateHistoryFile[] = Array.isArray(saved) ? saved : [];
+      const completed = sectionJobs.filter((job) => ["completed", "failed"].includes(job.status));
+      const server: UpdateHistoryFile[] = completed.map((job) => ({
+        id: job.id, intent: job.intent, label: intentLabels[job.intent] || job.intent,
+        createdAt: String(job.completedAt || job.createdAt),
+        status: job.status === "failed" || job.failedRows > 0 ? "error" : "success",
+        rows: local.find((file) => file.id === job.id)?.rows || [],
+      }));
+      setHistoryFiles([...server, ...local.filter((file) => !server.some((item) => item.id === file.id))].slice(0, 6));
     } catch {
       setHistoryFiles([]);
     }
-  }, [historyKey]);
+  }, [historyKey, sectionJobs]);
 
   useEffect(() => {
     if (typeof window === "undefined" || view === "dashboard") {
@@ -1019,14 +1035,14 @@ export function BulkProducts({
     try {
       const savedJobId = window.localStorage.getItem(activeJobKey);
 
-      setActiveJobId(savedJobId || null);
+      setActiveJobId(sectionJobs.find((job) => ["queued", "running"].includes(job.status))?.id || savedJobId || null);
       setActiveJob(null);
     } catch {
       setActiveJobId(null);
       setActiveJob(null);
       // Browser storage can be unavailable in private sessions.
     }
-  }, [activeJobKey, view]);
+  }, [activeJobKey, view, sectionJobs]);
 
   useEffect(() => {
     if (fetcher.data && "job" in fetcher.data && fetcher.data.job) {
@@ -1051,18 +1067,22 @@ export function BulkProducts({
   }, [activeJobKey, fetcher.data, shopify]);
 
   useEffect(() => {
-    if (!activeJobId) {
+    if (!activeJobId || ["completed", "failed"].includes(activeJob?.status || "")) {
       return;
     }
 
     let cancelled = false;
+    let timer: number | undefined;
+    const controller = new AbortController();
 
     const loadJob = async () => {
+      let finished = false;
       try {
         const token = await (
           shopify as unknown as { idToken?: () => Promise<string> }
         ).idToken?.();
         const response = await fetch(`/app/jobs/${activeJobId}`, {
+          signal: controller.signal,
           credentials: "include",
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         });
@@ -1072,6 +1092,7 @@ export function BulkProducts({
         }
 
         const job = (await response.json()) as BulkJobStatus;
+        finished = ["completed", "failed"].includes(job.status);
 
         if (!cancelled) {
           setActiveJob(job);
@@ -1090,19 +1111,17 @@ export function BulkProducts({
               : current,
           );
         }
+      } finally {
+        if (!cancelled && !finished) timer = window.setTimeout(loadJob, 2500);
       }
     };
 
     loadJob();
-    const interval = window.setInterval(() => {
-      if (!["completed", "failed"].includes(activeJob?.status || "")) {
-        loadJob();
-      }
-    }, 2000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [activeJobId, activeJob?.status, shopify]);
 
@@ -1190,11 +1209,26 @@ export function BulkProducts({
 
     shopify.toast.show(
       activeJob.status === "completed"
-        ? "Bulk job completed"
+        ? (activeJob.failedRows || 0) > 0 ? "Bulk job completed with errors" : "Bulk job completed"
         : "Bulk job failed",
-      { isError: activeJob.status === "failed" },
+      { isError: activeJob.status === "failed" || (activeJob.failedRows || 0) > 0 },
     );
   }, [activeJob, historyKey, shopify, view]);
+
+  async function downloadSavedResult(file: UpdateHistoryFile) {
+    try {
+      if (file.rows.length) return downloadResultFile(file);
+      const token = await (shopify as unknown as { idToken?: () => Promise<string> }).idToken?.();
+      const response = await fetch(`/app/jobs/${file.id}`, {
+        credentials: "include", headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (!response.ok) throw new Error("Unable to download this result file. Please try again.");
+      const job = await response.json();
+      downloadResultFile({ ...file, rows: getResultRows({ intent: job.intent, result: job.result, error: job.error }) });
+    } catch (error) {
+      shopify.toast.show(error instanceof Error ? error.message : "Result download failed.", { isError: true });
+    }
+  }
 
   if (view === "dashboard") {
     return (
@@ -1571,7 +1605,7 @@ export function BulkProducts({
                     <button
                       className={styles.editButton}
                       type="button"
-                      onClick={() => downloadResultFile(file)}
+                      onClick={() => downloadSavedResult(file)}
                     >
                       Download
                     </button>

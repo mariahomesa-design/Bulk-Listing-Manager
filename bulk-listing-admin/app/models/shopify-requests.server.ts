@@ -18,6 +18,22 @@ type RequestState = {
 };
 
 const states = new WeakMap<GraphqlClient, RequestState>();
+const shopStates = new Map<string, WeakRef<RequestState>>();
+function createState(): RequestState {
+  return { tail: Promise.resolve(), available: 0, restoreRate: 0, maximum: 1000, observedAt: 0, costs: new Map() };
+}
+
+export function bindShopifyClient(admin: GraphqlClient, shop: string) {
+  const key = shop.toLowerCase();
+  const state = shopStates.get(key)?.deref() ?? createState();
+  states.set(admin, state);
+  shopStates.set(key, new WeakRef(state));
+  if (shopStates.size > 100) {
+    for (const [name, reference] of shopStates) {
+      if (!reference.deref()) shopStates.delete(name);
+    }
+  }
+}
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function throttleErrors(body: any) {
@@ -62,7 +78,7 @@ export async function shopifyRequest(
 ): Promise<Response> {
   let state = states.get(admin);
   if (!state) {
-    state = { tail: Promise.resolve(), available: 0, restoreRate: 0, maximum: 1000, observedAt: 0, costs: new Map() };
+    state = createState();
     states.set(admin, state);
   }
   const previous = state.tail;

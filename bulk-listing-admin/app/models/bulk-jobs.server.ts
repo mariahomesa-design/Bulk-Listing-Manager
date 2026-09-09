@@ -6,6 +6,7 @@ import {
   applyProductActions,
   createBulkVariations,
   createProducts,
+  getProductStockStates,
   resolveStatusRowsProductIds,
   updateInventoryQuantities,
   updateProductImages,
@@ -118,7 +119,7 @@ function summarizeJobResult(
   if (value.stock || value.statuses) {
     const stockSuccess = Math.max(
       0,
-      numericValue(value.stock?.updatedRows) - numericValue(value.stock?.failedRows),
+      numericValue(value.stock?.updatedRows),
     );
     const stockFailed = numericValue(value.stock?.failedRows);
     const statusCounts: RowCounts = Array.isArray(value.statuses)
@@ -329,7 +330,23 @@ export async function getRecentBulkJobs(shop: string, intent?: string, take = 10
 export async function getBulkJob(shop: string, id: string) {
   const job = await prisma.bulkJob.findFirst({
     where: { id, shop },
+    select: {
+      id: true, intent: true, fileName: true, uploadedBy: true, status: true,
+      progress: true, totalRows: true, processedRows: true, successRows: true,
+      failedRows: true, message: true, result: true, error: true,
+      createdAt: true, startedAt: true, completedAt: true, updatedAt: true,
+    },
   });
+
+  if (job?.status === "running" && !activeJobs.has(id) &&
+      Date.now() - job.updatedAt.getTime() > 15 * 60 * 1000) {
+    const message = "Processing was interrupted. Some changes may have reached Shopify. Download a fresh template to check current values before retrying.";
+    const updated = await prisma.bulkJob.updateMany({
+      where: { id, shop, status: "running", updatedAt: job.updatedAt },
+      data: { status: "failed", error: message, message, completedAt: new Date() },
+    });
+    if (updated.count) return { ...job, status: "failed", error: message, message };
+  }
 
   if (job?.status === "queued") {
     startBulkJob(job.id);
@@ -345,7 +362,9 @@ export function startBulkJob(id: string) {
 
   activeJobs.add(id);
   setTimeout(() => {
-    processBulkJob(id).finally(() => activeJobs.delete(id));
+    processBulkJob(id)
+      .catch((error) => console.error("Bulk job worker failed", id, error))
+      .finally(() => activeJobs.delete(id));
   }, 0);
 }
 
@@ -368,12 +387,12 @@ async function updateJobProgress(
 async function processBulkJob(id: string) {
   const job = await prisma.bulkJob.findUnique({ where: { id } });
 
-  if (!job || job.status === "completed" || job.status === "failed") {
+  if (!job || job.status !== "queued") {
     return;
   }
 
-  await prisma.bulkJob.update({
-    where: { id },
+  const claim = await prisma.bulkJob.updateMany({
+    where: { id, status: "queued" },
     data: {
       status: "running",
       progress: 5,
@@ -381,6 +400,13 @@ async function processBulkJob(id: string) {
       message: "Connecting to Shopify.",
     },
   });
+  if (!claim.count) return;
+  const heartbeat = setInterval(() => {
+    prisma.bulkJob.updateMany({
+      where: { id, status: "running" }, data: { updatedAt: new Date() },
+    }).catch((error) => console.error("Bulk job heartbeat failed", id, error));
+  }, 30000);
+  heartbeat.unref();
 
   try {
     const { admin } = await unauthenticated.admin(job.shop);
@@ -404,7 +430,7 @@ async function processBulkJob(id: string) {
         failedRows: counts.failedRows,
         result: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
         completedAt: new Date(),
-        message: "Completed.",
+        message: counts.failedRows > 0 ? `Completed with ${counts.failedRows} failed rows. Download the result file for details.` : "Completed.",
       },
     });
   } catch (error) {
@@ -427,6 +453,8 @@ async function processBulkJob(id: string) {
         message: "Failed.",
       },
     });
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -511,17 +539,35 @@ async function runBulkJobIntent(
       }
     }
 
+    const currentStates = await getProductStockStates(admin, Array.from(statusPlans.keys()));
+    const statusPreflightErrors = new Map<string, string>();
+    const unchangedStatuses: Array<{ productId: string; success: boolean; message: string }> = [];
+    for (const [productId, plan] of statusPlans) {
+      const explicit = new Set(plan.rows.map((row) => row.productStatus).filter(Boolean));
+      const current = currentStates.get(productId);
+      if (explicit.size > 1) {
+        statusPreflightErrors.set(productId, "Conflicting statuses were entered for variants of the same product. Use one status for the whole product.");
+      } else if (current?.error || current?.quantity === undefined) {
+        statusPreflightErrors.set(productId, current?.error || "Could not verify the product's current inventory.");
+      } else {
+        plan.status = explicit.size === 1 ? Array.from(explicit)[0]! : current.quantity > 0 ? "ACTIVE" : "DRAFT";
+        if (current.status === plan.status) {
+          unchangedStatuses.push({ productId, success: true, message: `Status is already ${plan.status}.` });
+        }
+      }
+    }
+    const unchangedIds = new Set(unchangedStatuses.map((row) => row.productId));
     const statusGroups = Array.from(statusPlans.entries()).reduce<
       Record<"ACTIVE" | "DRAFT" | "ARCHIVED", string[]>
     >(
       (groups, [productId, plan]) => {
-        groups[plan.status].push(productId);
+        if (!statusPreflightErrors.has(productId) && !unchangedIds.has(productId)) groups[plan.status].push(productId);
         return groups;
       },
       { ACTIVE: [], DRAFT: [], ARCHIVED: [] },
     );
-    const statusResult = [];
-    let completedStatuses = 0;
+    const statusResult = [unchangedStatuses];
+    let completedStatuses = unchangedStatuses.length;
     const missingStatusRows = resolvedStatusRows.filter(
       (row) => desiredStockStatus(row) && !row.productId,
     );
@@ -568,17 +614,17 @@ async function runBulkJobIntent(
           } else {
             const outcome = statusOutcomes.get(row.productId);
             success = success && outcome?.success === true;
-            messages.push(outcome?.message || "Shopify did not confirm the status update.");
+            messages.push(statusPreflightErrors.get(row.productId) || outcome?.message || "Shopify did not confirm the status update.");
           }
         }
         return {
-          row: index + 2,
+          row: row.sourceRow ?? index + 2,
           sku: row.sku || "",
           barcode: row.barcode || "",
           productId: row.productId || "",
           inventoryItemId: row.inventoryItemId || "",
           quantity: row.quantity,
-          requestedStatus: status || "",
+          requestedStatus: row.productStatus || statusPlans.get(row.productId)?.status || status || "",
           status: success ? "Success" : "Error",
           message: messages.join(" "),
         };
@@ -602,7 +648,7 @@ async function runBulkJobIntent(
             .join(", "),
           action: plan.status,
           success: statusOutcomes.get(productId)?.success ?? false,
-          message: statusOutcomes.get(productId)?.message || "Status update result missing.",
+          message: statusPreflightErrors.get(productId) || statusOutcomes.get(productId)?.message || "Status update result missing.",
         })),
       ].filter((group) => Array.isArray(group) && group.length > 0),
     };

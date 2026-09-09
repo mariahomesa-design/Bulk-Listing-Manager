@@ -42,6 +42,7 @@ type CreateProductReportRow = {
 };
 
 export type VariantUpdateRow = {
+  sourceRow?: number;
   productId: string;
   variantId: string;
   price?: string;
@@ -160,8 +161,12 @@ function booleanValue(value: string): boolean | undefined {
 }
 
 function numberValue(value: string): number | undefined {
+  if (!value.trim()) return undefined;
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  if (!Number.isInteger(parsed) || parsed < -2147483648 || parsed > 2147483647) {
+    throw new Error(`Invalid stock quantity "${value}". Enter a whole number or leave the cell blank.`);
+  }
+  return parsed;
 }
 
 function decimalStringValue(value: string) {
@@ -211,7 +216,11 @@ function statusValue(value: string): "ACTIVE" | "DRAFT" | "ARCHIVED" {
 function optionalStatusValue(
   value: string,
 ): "ACTIVE" | "DRAFT" | "ARCHIVED" | undefined {
-  return value.trim() ? statusValue(value) : undefined;
+  if (!value.trim()) return undefined;
+  if (!["ACTIVE", "DRAFT", "ARCHIVED", "UNLIST", "UNLISTED"].includes(value.trim().toUpperCase())) {
+    throw new Error(`Invalid status "${value}". Use Active, Draft, or Unlist.`);
+  }
+  return statusValue(value);
 }
 
 function productActionValue(
@@ -313,14 +322,11 @@ export function normalizeStockRows(
   rows: (VariantUpdateRow | Record<string, unknown>)[],
 ): VariantUpdateRow[] {
   return rows
-    .map((row) => {
+    .map((row, index) => {
       const raw = row as Record<string, unknown>;
-
-      if (raw.inventoryItemId && raw.quantity !== undefined) {
-        return row as VariantUpdateRow;
-      }
-
+      try {
       return {
+        sourceRow: index + 2,
         productId: rowValue(raw, ["Product ID", "productId"]),
         variantId: rowValue(raw, ["variantId"]),
         inventoryItemId: rowValue(raw, [
@@ -332,12 +338,15 @@ export function normalizeStockRows(
         quantity: numberValue(
           rowValue(raw, ["New stock", "Stock", "quantity"]),
         ),
-        productStatus: optionalStatusValue(rowValue(raw, ["Status", "status"])),
+        productStatus: optionalStatusValue(rowValue(raw, ["Status", "status", "productStatus"])),
       };
+      } catch (error) {
+        throw new Error(`Row ${index + 2}, barcode ${rowValue(raw, ["Barcode", "barcode"]) || "missing"}: ${errorMessage(error)}`);
+      }
     })
     .filter(
       (row) =>
-        (row.inventoryItemId && row.quantity !== undefined) ||
+        row.quantity !== undefined ||
         Boolean(row.productStatus && (row.productId || row.barcode)),
     );
 }
@@ -346,14 +355,15 @@ export function normalizePriceRows(
   rows: (VariantUpdateRow | Record<string, unknown>)[],
 ): VariantUpdateRow[] {
   return rows
-    .map((row) => {
+    .map((row, index) => {
       const raw = row as Record<string, unknown>;
 
       if (raw.productId && raw.variantId) {
-        return row as VariantUpdateRow;
+        return { ...row, sourceRow: index + 2 } as VariantUpdateRow;
       }
 
       return {
+        sourceRow: index + 2,
         productId: rowValue(raw, ["Product ID", "productId"]),
         variantId: rowValue(raw, ["Variant ID", "variantId"]),
         sku: rowValue(raw, ["SKU", "sku"]),
@@ -757,50 +767,9 @@ export async function getBulkDeleteTemplateRows(admin: GraphqlClient) {
 }
 
 const PRODUCT_LIST_QUERY = `#graphql
-  query ProductBulkManagerProducts {
-    products(first: 25, sortKey: UPDATED_AT, reverse: true) {
-      edges {
-        node {
-          id
-          title
-          status
-          vendor
-          totalInventory
-          collections(first: 5) {
-            edges {
-              node {
-                id
-                title
-              }
-            }
-          }
-          variants(first: 10) {
-            edges {
-              node {
-                id
-                title
-                sku
-                barcode
-                price
-                inventoryQuantity
-                inventoryItem {
-                  id
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    collections(first: 50, sortKey: TITLE) {
-      edges {
-        node {
-          id
-          title
-        }
-      }
-    }
-    locations(first: 10) {
+  query ProductBulkManagerLocations($cursor: String) {
+    locations(first: 250, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
       edges {
         node {
           id
@@ -813,13 +782,13 @@ const PRODUCT_LIST_QUERY = `#graphql
 
 const STORE_COUNT_QUERY = `#graphql
   query ProductBulkManagerCounts {
-    productsCount {
+    productsCount(limit: null) {
       count
     }
-    activeProductsCount: productsCount(query: "status:active") {
+    activeProductsCount: productsCount(query: "status:active", limit: null) {
       count
     }
-    draftProductsCount: productsCount(query: "status:draft") {
+    draftProductsCount: productsCount(query: "status:draft", limit: null) {
       count
     }
     collectionsCount {
@@ -828,25 +797,20 @@ const STORE_COUNT_QUERY = `#graphql
   }
 `;
 
-export async function getBulkManagerData(admin: GraphqlClient) {
-  let json: any = {};
-
-  try {
-    const response = await shopifyRequest(admin, PRODUCT_LIST_QUERY);
-    json = await response.json();
-
-    if (json.errors) {
-      const accessErrors = json.errors.filter((error: any) =>
-        String(error.message || "").includes("Access denied"),
-      );
-
-      if (accessErrors.length !== json.errors.length) {
-        json = {};
-      }
-    }
-  } catch {
-    json = {};
-  }
+export async function getBulkManagerData(admin: GraphqlClient, includeCounts = true) {
+  const locations: Array<{ id: string; name: string }> = [];
+  let cursor: string | null = null;
+  do {
+    const response = await shopifyRequest(admin, PRODUCT_LIST_QUERY, { variables: { cursor } });
+    const json = await response.json();
+    if (json.errors?.length) throw new Error(graphqlErrorMessage(json.errors));
+    const connection = json.data?.locations;
+    if (!connection) throw new Error("Shopify did not return inventory locations. Please reload the app.");
+    locations.push(...connection.edges.map((edge: any) => edge.node));
+    const next = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
+    if (next && next === cursor) throw new Error("Shopify returned a repeated location page.");
+    cursor = next;
+  } while (cursor);
 
   let counts: {
     productCount?: number;
@@ -855,7 +819,7 @@ export async function getBulkManagerData(admin: GraphqlClient) {
     collectionCount?: number;
   } = {};
 
-  try {
+  if (includeCounts) try {
     const countResponse = await shopifyRequest(admin, STORE_COUNT_QUERY);
     const countJson = await countResponse.json();
 
@@ -872,14 +836,13 @@ export async function getBulkManagerData(admin: GraphqlClient) {
   }
 
   return {
-    products: json.data?.products?.edges.map((edge: any) => edge.node) || [],
+    products: [],
     productCount: counts.productCount,
     activeProductCount: counts.activeProductCount,
     draftProductCount: counts.draftProductCount,
-    collections:
-      json.data?.collections?.edges.map((edge: any) => edge.node) || [],
+    collections: [],
     collectionCount: counts.collectionCount,
-    locations: json.data?.locations?.edges.map((edge: any) => edge.node) || [],
+    locations,
   };
 }
 
@@ -1098,7 +1061,7 @@ async function findExistingVariantByBarcode(
   const response = await shopifyRequest(admin,
     `#graphql
       query BulkListingFindBarcode($query: String!) {
-        productVariants(first: 1, query: $query) {
+        productVariants(first: 2, query: $query) {
           edges {
             node {
               id
@@ -1148,7 +1111,13 @@ async function findExistingVariantByBarcode(
     );
   }
 
-  return json.data?.productVariants?.edges?.[0]?.node;
+  const matches = (json.data?.productVariants?.edges || [])
+    .map((edge: any) => edge.node)
+    .filter((variant: any) => variant.barcode === barcode);
+  if (matches.length > 1) {
+    throw new Error(`Barcode ${barcode} matches more than one Shopify variant. Use unique barcodes before updating.`);
+  }
+  return matches[0];
 }
 
 function groupVariationRows(rows: VariationRow[]) {
@@ -1937,7 +1906,7 @@ export async function createProducts(
           row.tracked !== undefined ||
           row.inventoryPolicy)
       ) {
-        await updateVariantPrices(admin, [
+        const priceResult = await updateVariantPrices(admin, [
           {
             productId: product.id,
             variantId: variant.id,
@@ -1952,6 +1921,9 @@ export async function createProducts(
             tracked: row.tracked ?? row.quantity !== undefined,
           },
         ]);
+        if (priceResult.errors.length) {
+          throw new Error(priceResult.errors.map((error) => error.message).join("; "));
+        }
       }
 
       if (
@@ -2233,6 +2205,29 @@ export async function updateProductStatuses(
   });
 }
 
+export async function getProductStockStates(admin: GraphqlClient, productIds: string[]) {
+  const states = new Map<string, { quantity?: number; status?: string; error?: string }>();
+  for (const ids of chunkArray(Array.from(new Set(productIds)), 100)) {
+    try {
+      const response = await shopifyRequest(admin, `#graphql
+        query BulkProductStockStates($ids: [ID!]!) {
+          nodes(ids: $ids) { ... on Product { id totalInventory status } }
+        }`, { variables: { ids } });
+      const json = await response.json();
+      if (json.errors?.length) throw new Error(graphqlErrorMessage(json.errors));
+      for (const id of ids) states.set(id, { error: "Shopify did not return this product's current inventory and status." });
+      for (const product of json.data?.nodes || []) {
+        if (product?.id && Number.isInteger(product.totalInventory)) {
+          states.set(product.id, { quantity: product.totalInventory, status: product.status });
+        }
+      }
+    } catch (error) {
+      for (const id of ids) states.set(id, { error: errorMessage(error, "Unable to verify current product inventory.") });
+    }
+  }
+  return states;
+}
+
 export async function deleteProducts(
   admin: GraphqlClient,
   productIds: string[],
@@ -2485,6 +2480,17 @@ export async function updateVariantPrices(
   );
   const updated = [];
   const errors = [];
+  const reportRows: Array<{ row: number; productId: string; sku: string; barcode: string; status: string; message: string }> = [];
+  const report = (chunk: VariantUpdateRow[], status: string, message: string) => {
+    reportRows.push(...chunk.map((row) => ({
+      row: row.sourceRow ?? rows.indexOf(row) + 2,
+      productId: row.productId,
+      sku: row.sku || "",
+      barcode: row.barcode || "",
+      status,
+      message,
+    })));
+  };
 
   for (const [productId, variants] of Object.entries(byProduct)) {
     for (const chunk of chunkArray(variants, 100)) {
@@ -2535,35 +2541,36 @@ export async function updateVariantPrices(
         const json = await response.json();
 
         if (json.errors?.length) {
-          errors.push({
-            productId,
-            variants: chunk.length,
-            message: graphqlErrorMessage(json.errors),
-          });
-          continue;
+          throw new Error(graphqlErrorMessage(json.errors));
         }
 
         const result = json.data?.productVariantsBulkUpdate;
         const userErrors = result?.userErrors || [];
 
         if (userErrors.length) {
-          errors.push({
-            productId,
-            variants: chunk.length,
-            message: userErrors.map((error: any) => error.message).join("; "),
-          });
-          continue;
+          throw new Error(userErrors.map((error: any) => error.message).join("; "));
         }
 
+        const confirmed = new Set((result?.productVariants || []).map((variant: any) => variant.id));
+        const successful = chunk.filter((row) => confirmed.has(row.variantId));
+        const missing = chunk.filter((row) => !confirmed.has(row.variantId));
+        report(successful, "Success", "Variant updated successfully.");
+        if (missing.length) {
+          const message = "Shopify did not confirm the requested variant update.";
+          report(missing, "Error", message);
+          errors.push({ productId, variants: missing.length, message });
+        }
         updated.push({
           productId,
-          updated: result?.productVariants?.length || chunk.length,
+          updated: successful.length,
         });
       } catch (error) {
+        const message = errorMessage(error, "Price update failed.");
+        report(chunk, "Error", message);
         errors.push({
           productId,
           variants: chunk.length,
-          message: errorMessage(error, "Price update failed."),
+          message,
         });
       }
     }
@@ -2573,8 +2580,9 @@ export async function updateVariantPrices(
     summary: {
       products: updated.length,
       variants: updated.reduce((count, row) => count + row.updated, 0),
-      errors: errors.length,
+      errors: errors.reduce((count, row) => count + row.variants, 0),
     },
+    reportRows,
     rows: updated,
     errors,
   };
@@ -2596,10 +2604,27 @@ export async function updateInventoryQuantities(
     );
   }
 
-  const stockRows = rows.filter((row) => row.inventoryItemId && row.quantity !== undefined);
   const results: Array<{ batch: number; rows: number; changedAt: string | null }> = [];
   const errors: Array<{ batch: number; rows: number; message: string }> = [];
   const rowResults: Array<VariantUpdateRow & { success: boolean; message: string }> = [];
+  const quantitiesByItem = new Map<string, Set<number>>();
+  for (const row of rows) {
+    if (!row.inventoryItemId || row.quantity === undefined) continue;
+    const values = quantitiesByItem.get(row.inventoryItemId) ?? new Set<number>();
+    values.add(row.quantity);
+    quantitiesByItem.set(row.inventoryItemId, values);
+  }
+  const stockRows = rows.filter((row) => {
+    if (row.quantity === undefined) return false;
+    const message = !row.inventoryItemId ? "Missing inventory item ID. Download a fresh stock template."
+      : !Number.isInteger(row.quantity) || row.quantity < -2147483648 || row.quantity > 2147483647 ? "Stock must be a whole number within Shopify's supported range."
+      : (quantitiesByItem.get(row.inventoryItemId)?.size || 0) > 1 ? "Conflicting quantities were entered for the same inventory item. Use one quantity for this SKU."
+      : "";
+    if (!message) return true;
+    rowResults.push({ ...row, success: false, message });
+    errors.push({ batch: 0, rows: 1, message });
+    return false;
+  });
   const mutation = `#graphql
     mutation BulkListingInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
       inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
@@ -2621,7 +2646,8 @@ export async function updateInventoryQuantities(
     }`;
 
   async function processChunk(sourceRows: VariantUpdateRow[], batch: number): Promise<void> {
-    const quantityChunk = sourceRows.map((row) => ({
+    const uniqueRows = Array.from(new Map(sourceRows.map((row) => [row.inventoryItemId, row])).values());
+    const quantityChunk = uniqueRows.map((row) => ({
       inventoryItemId: row.inventoryItemId,
       locationId,
       quantity: row.quantity,
@@ -2672,7 +2698,7 @@ export async function updateInventoryQuantities(
       rowResults.push(...sourceRows.map((row) => ({ ...row, success: true, message: "Stock updated successfully." })));
       results.push({
         batch,
-        rows: quantityChunk.length,
+        rows: sourceRows.length,
         changedAt: result?.inventoryAdjustmentGroup?.createdAt || null,
       });
     } catch (error) {
@@ -2680,7 +2706,7 @@ export async function updateInventoryQuantities(
       rowResults.push(...sourceRows.map((row) => ({ ...row, success: false, message })));
       errors.push({
         batch,
-        rows: quantityChunk.length,
+        rows: sourceRows.length,
         message,
       });
     }
