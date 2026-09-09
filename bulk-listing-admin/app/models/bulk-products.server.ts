@@ -2691,8 +2691,59 @@ export async function updateInventoryQuantities(
         ).join("; "));
       }
 
-      if (!result?.inventoryAdjustmentGroup) {
-        throw new Error("Shopify did not confirm this stock batch. No successful update was recorded.");
+      if (!result) {
+        throw new Error("Shopify returned no inventory update result. The stock update could not be confirmed.");
+      }
+
+      if (!result.inventoryAdjustmentGroup) {
+        // An absent adjustment is not proof of failure. Read back stock without replaying the write.
+        for (const verificationRows of chunkArray(uniqueRows, 100)) {
+          const ids = verificationRows.map((row) => row.inventoryItemId!);
+          const sourceGroup = sourceRows.filter((row) => ids.includes(row.inventoryItemId!));
+          let verified: Array<VariantUpdateRow & { success: boolean; message: string }>;
+          try {
+            const verification = await shopifyRequest(admin, `#graphql
+              query BulkInventoryVerification($ids: [ID!]!, $locationId: ID!) {
+                nodes(ids: $ids) {
+                  ... on InventoryItem {
+                    id
+                    inventoryLevel(locationId: $locationId) {
+                      quantities(names: ["available"]) { name quantity }
+                    }
+                  }
+                }
+              }`, {
+              apiVersion: ApiVersion.April26,
+              tries: 1,
+              variables: { ids, locationId },
+            });
+            const checked = await verification.json();
+            if (checked.errors?.length) throw new Error(graphqlErrorMessage(checked.errors));
+            if (!Array.isArray(checked.data?.nodes)) throw new Error("Shopify returned no inventory verification data.");
+            const items = new Map<string, any>(checked.data.nodes.filter((item: any) => item?.id).map((item: any) => [item.id, item]));
+            verified = sourceGroup.map((row) => {
+              const item = items.get(row.inventoryItemId!);
+              const actual = item?.inventoryLevel?.quantities?.find((quantity: any) => quantity.name === "available")?.quantity;
+              const success = Number.isInteger(actual) && actual === row.quantity;
+              const message = success ? `Stock verified successfully: ${actual} available at the selected location.`
+                : !item ? "Inventory item was not found when verifying stock. Download a fresh template."
+                : !item.inventoryLevel ? "Inventory item is not stocked at the selected location."
+                : !Number.isInteger(actual) ? "Shopify did not return an available stock quantity for the selected location."
+                : `Stock verification mismatch: requested ${row.quantity}, but Shopify reports ${actual} available at the selected location. Check current stock before retrying.`;
+              return { ...row, success, message };
+            });
+          } catch (error) {
+            const message = `Stock could not be verified: ${errorMessage(error, "Inventory verification failed.")} Check current stock before retrying.`;
+            verified = sourceGroup.map((row) => ({ ...row, success: false, message }));
+          }
+          rowResults.push(...verified);
+          const successfulRows = verified.filter((row) => row.success).length;
+          if (successfulRows) results.push({ batch, rows: successfulRows, changedAt: null });
+          for (const row of verified.filter((row) => !row.success)) {
+            errors.push({ batch, rows: 1, message: row.message });
+          }
+        }
+        return;
       }
 
       rowResults.push(...sourceRows.map((row) => ({ ...row, success: true, message: "Stock updated successfully." })));

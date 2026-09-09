@@ -92,6 +92,96 @@ test("Shopify user errors and missing confirmation are failures", async () => {
   }
 });
 
+const noAdjustment = () => Response.json({ data: {
+  inventorySetQuantities: { inventoryAdjustmentGroup: null, userErrors: [] },
+} });
+const inventoryNode = (id, quantity) => ({ id, inventoryLevel: { quantities: [{ name: "available", quantity }] } });
+
+test("4360 unchanged quantities are verified at the selected location, not falsely failed", async () => {
+  let writes = 0;
+  let reads = 0;
+  const input = Array.from({ length: 4360 }, (_, i) => row(i));
+  const expected = new Map(input.map((entry) => [entry.inventoryItemId, entry.quantity]));
+  const result = await products.updateInventoryQuantities({ graphql: async (query, options) => {
+    if (query.includes("mutation BulkListingInventory")) {
+      writes++;
+      return noAdjustment();
+    }
+    reads++;
+    assert.match(query, /inventoryLevel\(locationId: \$locationId\)/);
+    assert.equal(options.variables.locationId, "location");
+    assert.equal(options.apiVersion, "2026-04");
+    assert.ok(options.variables.ids.length <= 100);
+    return Response.json({ data: { nodes: options.variables.ids.map((id) => inventoryNode(id, expected.get(id))).reverse() } });
+  } }, input, "location");
+  assert.equal(writes, 18);
+  assert.equal(reads, 53);
+  assert.equal(result.updatedRows, 4360);
+  assert.equal(result.failedRows, 0);
+  assert.equal(result.rowResults.length, 4360);
+  assert.ok(result.rowResults.every((entry) => entry.success && /verified successfully/.test(entry.message)));
+});
+
+test("verification reports exact mismatches, missing items and missing location without replaying writes", async () => {
+  let writes = 0;
+  const result = await products.updateInventoryQuantities({ graphql: async (query) => {
+    if (query.includes("mutation")) { writes++; return noAdjustment(); }
+    return Response.json({ data: { nodes: [
+      inventoryNode("inventory-0", 0), inventoryNode("inventory-1", 5), null,
+      { id: "inventory-3", inventoryLevel: null }, inventoryNode("inventory-4", null),
+    ] } });
+  } }, Array.from({ length: 5 }, (_, i) => row(i)), "location");
+  assert.equal(writes, 1);
+  assert.equal(result.updatedRows, 1);
+  assert.equal(result.failedRows, 4);
+  assert.equal(result.rowResults[1].barcode, "001");
+  assert.match(result.rowResults[1].message, /requested 30, but Shopify reports 5/);
+  assert.match(result.rowResults[2].message, /not found/);
+  assert.match(result.rowResults[3].message, /not stocked/);
+  assert.match(result.rowResults[4].message, /did not return/);
+});
+
+test("verification failure preserves earlier confirmed rows and duplicate source rows", async () => {
+  let reads = 0;
+  const input = [...Array.from({ length: 101 }, (_, i) => row(i)), row(0)];
+  const result = await products.updateInventoryQuantities({ graphql: async (query, options) => {
+    if (query.includes("mutation")) return noAdjustment();
+    if (++reads === 2) throw new Error("Read unavailable");
+    return Response.json({ data: { nodes: options.variables.ids.map((id) => inventoryNode(id, input.find((entry) => entry.inventoryItemId === id).quantity)) } });
+  } }, input, "location");
+  assert.equal(result.updatedRows, 101);
+  assert.equal(result.failedRows, 1);
+  assert.equal(result.rowResults.length, 102);
+  assert.equal(result.rowResults.filter((entry) => entry.inventoryItemId === "inventory-0" && entry.success).length, 2);
+  assert.match(result.rowResults.find((entry) => !entry.success).message, /Read unavailable/);
+});
+
+test("verified unchanged stock still allows requested product statuses to update", async () => {
+  const changed = [];
+  const jobs = load("bulk-jobs.server.ts", {
+    "../db.server": {}, "../shopify.server": {},
+    "./bulk-products.server": {
+      ...products,
+      resolveStatusRowsProductIds: async (_admin, rows) => rows,
+      getProductStockStates: async (_admin, ids) => new Map(ids.map((id) => [id, { quantity: 0, status: "ACTIVE" }])),
+      updateProductStatuses: async (_admin, ids, status) => {
+        changed.push(...ids.map((id) => ({ id, status })));
+        return ids.map((productId) => ({ productId, success: true, message: `Status updated to ${status}.` }));
+      },
+    },
+  }, "\nexport { runBulkJobIntent, summarizeJobResult };\n");
+  const result = await jobs.runBulkJobIntent({ graphql: async (query) => {
+    if (query.includes("mutation")) return noAdjustment();
+    return Response.json({ data: { nodes: [inventoryNode("inventory-0", 0)] } });
+  } }, "update-stock", { rows: [{ ...row(0), productStatus: "DRAFT" }], locationId: "location" }, async () => {});
+  assert.equal(changed.length, 1);
+  assert.equal(changed[0].status, "DRAFT");
+  assert.equal(result.reportRows[0].status, "Success");
+  assert.match(result.reportRows[0].message, /Stock verified successfully/);
+  assert.match(result.reportRows[0].message, /Status updated to DRAFT/);
+  assert.equal(jobs.summarizeJobResult(1, result).failedRows, 0);
+});
+
 test("GraphQL throttling retries the same inventory key until confirmed", async () => {
   const optionsSeen = [];
   const start = delays.length;
